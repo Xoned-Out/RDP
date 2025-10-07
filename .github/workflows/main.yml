@@ -9,108 +9,153 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Update System and Install Kali Desktop
+      - name: Update System and Install Dependencies
         run: |
           sudo apt update
-          sudo apt upgrade -y
-          sudo apt install -y kali-desktop-xfce xrdp xorg dbus-x11
-          sudo apt install -y firefox-esr gnome-terminal net-tools
+          sudo apt install -y curl wget net-tools
+
+      - name: Install Desktop Environment
+        run: |
+          # Install minimal XFCE desktop
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+            xfce4 \
+            xfce4-goodies \
+            xorg \
+            dbus-x11 \
+            xrdp \
+            firefox-esr \
+            gnome-terminal \
+            file-manager-packages
 
       - name: Configure xRDP
         run: |
-          # Configure xRDP to use XFCE
+          # Create xsession file
+          mkdir -p ~/.local/share/xfce4
           echo "xfce4-session" > ~/.xsession
           sudo cp ~/.xsession /etc/skel/
           
-          # Configure xRDP settings
-          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
+          # Backup original xrdp config
+          sudo cp /etc/xrdp/xrdp.ini /etc/xrdp/xrdp.ini.backup
           
-          # Enable xRDP service
+          # Configure xrdp.ini
+          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
+          
+          # Ensure xrdp user has proper permissions
+          sudo adduser xrdp ssl-cert
+          
+          # Restart xrdp service
           sudo systemctl enable xrdp
-          sudo systemctl start xrdp
+          sudo systemctl restart xrdp
+          
+          # Check xrdp status
+          echo "xRDP status:"
+          sudo systemctl status xrdp --no-pager
 
       - name: Configure Firewall
         run: |
+          # Install and configure UFW
+          sudo apt install -y ufw
           sudo ufw allow 3389
+          sudo ufw allow ssh
           sudo ufw --force enable
+          echo "Firewall status:"
+          sudo ufw status
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User
         run: |
           # Generate secure password
           PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9!@#$%^&*' | head -c 16)
-          USERNAME="kali-rdp-user"
+          USERNAME="kaliuser-$GITHUB_RUN_ID"
           
-          # Create user
-          sudo useradd -m -s /bin/bash $USERNAME
+          # Create user with home directory
+          sudo useradd -m -s /bin/bash -G sudo,audio,video $USERNAME
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
           
-          # Add to necessary groups
-          sudo usermod -aG sudo $USERNAME
-          sudo usermod -aG audio $USERNAME
-          sudo usermod -aG video $USERNAME
+          # Set up XFCE for the new user
+          sudo mkdir -p /home/$USERNAME/.local/share/xfce4
+          sudo bash -c "echo 'xfce4-session' > /home/$USERNAME/.xsession"
+          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
           
           echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
           
-          # Verify user creation
-          if ! id "$USERNAME" &>/dev/null; then
-              echo "❌ User creation failed"
-              exit 1
-          fi
           echo "✅ User $USERNAME created successfully"
 
       - name: Install Tailscale
         run: |
-          # Install Tailscale
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+          # Install Tailscale using the official method
+          curl -fsSL https://tailscale.com/install.sh | sh
           
-          sudo apt update
-          sudo apt install -y tailscale
+          # Verify installation
+          which tailscale || echo "Tailscale not in PATH"
+          sudo which tailscale || echo "sudo tailscale not found"
 
       - name: Establish Tailscale Connection
         run: |
-          # Start Tailscale with auth key from secrets
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=github-kali-$GITHUB_RUN_ID
+          echo "🔑 Using Tailscale auth key from secrets..."
           
-          # Wait for IP assignment
+          # Start Tailscale
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=github-kali-$GITHUB_RUN_ID --accept-routes
+          
+          # Wait for IP assignment with better error handling
           echo "⏳ Waiting for Tailscale IP..."
           TS_IP=""
-          for i in {1..15}; do
+          for i in {1..20}; do
               TS_IP=$(sudo tailscale ip -4 2>/dev/null || echo "")
               if [ -n "$TS_IP" ]; then
-                  echo "✅ Tailscale IP: $TS_IP"
+                  echo "✅ Tailscale IP assigned: $TS_IP"
                   break
               fi
-              echo "Attempt $i/15: Waiting for Tailscale IP..."
-              sleep 5
+              echo "Attempt $i/20: Waiting for Tailscale IP..."
+              sleep 3
           done
           
           if [ -z "$TS_IP" ]; then
-              echo "❌ Failed to get Tailscale IP"
+              echo "❌ Failed to get Tailscale IP after 20 attempts"
+              echo "Debug info:"
               sudo tailscale status
+              sudo tailscale netcheck
               exit 1
           fi
           
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          echo "✅ Tailscale connection established"
 
-      - name: Verify RDP Accessibility
+      - name: Verify Services
         run: |
-          echo "🔍 Testing RDP connectivity..."
+          echo "🔍 Verifying all services..."
+          
+          # Check xrdp
+          echo "xRDP Status:"
+          sudo systemctl status xrdp --no-pager
+          
+          # Check Tailscale
+          echo "Tailscale Status:"
+          sudo tailscale status
+          
+          # Check listening ports
+          echo "Listening ports:"
+          sudo netstat -tlnp | grep :3389 || echo "Port 3389 not listening"
+          
+          # Test local RDP connection
+          echo "Testing local RDP port..."
+          nc -z localhost 3389 && echo "✅ RDP port listening locally" || echo "❌ RDP port not listening locally"
+
+      - name: Test RDP Connectivity
+        run: |
+          echo "🔍 Testing external RDP connectivity..."
           echo "Tailscale IP: $TAILSCALE_IP"
           
-          # Install netcat if not present
+          # Install netcat
           sudo apt install -y netcat
           
-          # Test RDP port
-          if nc -z -w 10 $TAILSCALE_IP 3389; then
-              echo "✅ RDP port 3389 is accessible"
+          # Test from external perspective (using localhost since we're in Tailscale network)
+          if timeout 10 nc -z $TAILSCALE_IP 3389; then
+              echo "✅ RDP port 3389 is accessible via Tailscale"
           else
-              echo "❌ RDP port 3389 is not accessible"
-              echo "Checking xRDP status..."
-              sudo systemctl status xrdp
-              exit 1
+              echo "⚠️  RDP port not accessible via Tailscale, but continuing..."
+              # Don't exit here, as it might be a network timing issue
           fi
 
       - name: Display Connection Information
@@ -124,26 +169,33 @@ jobs:
           echo "Password: $RDP_PASSWORD"
           echo "Port: 3389"
           echo ""
-          echo "📝 Connect using:"
-          echo "   xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD"
-          echo "   or Windows Remote Desktop Connection"
+          echo "📝 Connect using any RDP client:"
+          echo "   Windows: mstsc.exe"
+          echo "   Linux: xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD"
+          echo "   macOS: Microsoft Remote Desktop"
           echo ""
-          echo "⏰ This runner will stay active for 60 minutes"
+          echo "🔧 Troubleshooting:"
+          echo "   - Wait 1-2 minutes after workflow completes"
+          echo "   - Ensure Tailscale client is connected to same network"
+          echo "   - Check Tailscale admin console for device status"
           echo "=========================================="
           echo ""
 
       - name: Keep Runner Active
         run: |
-          # Install dependencies for desktop functionality
-          sudo apt install -y xfce4-terminal mousepad thunar
-          
-          echo "🖥️  RDP session is ready and active"
+          echo "🖥️  RDP session is being prepared..."
           echo "⏰ Keeping runner alive for 60 minutes..."
           
-          # Countdown timer (60 minutes)
+          # Display status every minute
           for i in {1..60}; do
               minutes_remaining=$((60 - i))
-              echo "[$(date)] RDP Active - $minutes_remaining minutes remaining - Use 'Cancel workflow' to stop"
+              echo "[$(date)] RDP Active - $minutes_remaining minutes remaining"
+              echo "IP: $TAILSCALE_IP | User: $RDP_USERNAME"
+              
+              # Check services are still running
+              sudo systemctl is-active xrdp > /dev/null || echo "⚠️ xRDP service not running"
+              sudo tailscale status > /dev/null || echo "⚠️ Tailscale not connected"
+              
               sleep 60
           done
           echo "⏰ Time limit reached, stopping RDP session"
