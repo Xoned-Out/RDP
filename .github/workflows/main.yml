@@ -27,122 +27,163 @@ jobs:
             thunar \
             mousepad
 
-      - name: Fix xRDP Black Screen Issue
+      - name: Configure xRDP Session
         run: |
           # Stop xrdp service
           sudo systemctl stop xrdp
           
-          # Configure xrdp to use Xorg instead of Xvnc
-          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
+          # Backup original startwm.sh
+          sudo cp /etc/xrdp/startwm.sh /etc/xrdp/startwm.sh.backup
           
-          # Create proper session configuration
+          # Create a simple and reliable startwm.sh
           sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
 #!/bin/sh
 # xrdp X session start script
 
+# Clean up environment
 unset DBUS_SESSION_BUS_ADDRESS
 unset XDG_RUNTIME_DIR
 
+# Start XFCE
 if [ -r /etc/default/locale ]; then
   . /etc/default/locale
   export LANG LANGUAGE
 fi
 
-# Start XFCE
-export XDG_SESSION_DESKTOP=xfce
-export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share:/usr/local/share:/usr/share
-export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
+. /etc/X11/Xsession
 
-exec startxfce4
+# Start XFCE
+startxfce4
 EOF
 
           sudo chmod +x /etc/xrdp/startwm.sh
-
-      - name: Configure xRDP Service
-        run: |
-          # Add xrdp user to ssl-cert group
-          sudo usermod -aG ssl-cert xrdp
           
-          # Enable and start xrdp
-          sudo systemctl enable xrdp
-          sudo systemctl start xrdp
-          
-          # Check xrdp status
-          sudo systemctl status xrdp
+          # Configure xrdp.ini
+          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
 
-      - name: Configure Firewall
-        run: |
-          sudo apt install -y ufw
-          sudo ufw allow 3389
-          sudo ufw --force enable
-
-      - name: Create RDP User
+      - name: Create RDP User and Configure Session
         run: |
           PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 10)
           USERNAME="rdpuser"
           
-          sudo useradd -m -s /bin/bash $USERNAME
-          echo "$USERNAME:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo $USERNAME
+          # Create user if doesn't exist
+          if ! id "$USERNAME" &>/dev/null; then
+            sudo useradd -m -s /bin/bash $USERNAME
+            echo "$USERNAME:$PASSWORD" | sudo chpasswd
+            sudo usermod -aG sudo $USERNAME
+          fi
           
-          # Set up XFCE for the user
-          sudo -u $USERNAME dbus-launch --exit-with-session xfce4-session &
-          sleep 5
-          sudo pkill -u $USERNAME
+          # Create XFCE session files for the user
+          sudo -u $USERNAME mkdir -p /home/$USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
+          sudo -u $USERNAME mkdir -p /home/$USERNAME/.local/share/xfce4
+          
+          # Create .xsessionrc
+          sudo -u $USERNAME tee /home/$USERNAME/.xsessionrc > /dev/null << 'EOF'
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=XFCE
+export XDG_CONFIG_HOME=$HOME/.config
+export XDG_DATA_HOME=$HOME/.local/share
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
+export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share:/usr/local/share:/usr/share
+
+# Start D-Bus session
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+  eval $(dbus-launch --sh-syntax --exit-with-session)
+fi
+EOF
+
+          # Create .xsession
+          sudo -u $USERNAME tee /home/$USERNAME/.xsession > /dev/null << 'EOF'
+#!/bin/sh
+[ -r $HOME/.xsessionrc ] && . $HOME/.xsessionrc
+exec startxfce4
+EOF
+
+          sudo chmod +x /home/$USERNAME/.xsession
+          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
           
           echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
-      - name: Install and Configure Tailscale
+      - name: Fix xRDP Permissions and Services
+        run: |
+          # Add xrdp user to necessary groups
+          sudo usermod -aG ssl-cert xrdp
+          sudo usermod -aG audio xrdp
+          sudo usermod -aG video xrdp
+          
+          # Fix permissions
+          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
+          
+          # Enable and restart xrdp
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+          
+          # Also restart dbus
+          sudo systemctl restart dbus
+
+      - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=ubuntu-rdp-$GITHUB_RUN_ID
-          sleep 10
+          sleep 15
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-      - name: Alternative xRDP Fix
+      - name: Final xRDP Fixes
         run: |
-          # Additional fixes for black screen
-          sudo apt install -y xserver-xorg-core xserver-xorg-video-fbdev
+          # Additional reliability fixes
+          sudo apt install -y xserver-xorg-input-all xserver-xorg-video-all
           
-          # Create polkit rule to allow user authentication
-          sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla > /dev/null << 'EOF'
-[Allow Colord for All Users]
-Identity=unix-user:*
-Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
-ResultAny=yes
-ResultInactive=yes
-ResultActive=yes
-EOF
+          # Ensure xrdp is using the correct session type
+          sudo systemctl restart xrdp
+          sleep 5
+          
+          # Test that xrdp is listening
+          sudo netstat -tlnp | grep 3389 && echo "✅ xRDP is listening on port 3389"
 
-      - name: Test xRDP Session
-        run: |
-          # Test if XFCE session starts properly
-          timeout 10s sudo -u rdpuser startxfce4 > /tmp/xfce-test.log 2>&1 || true
-          echo "XFCE test completed"
-
-      - name: Display Connection Info
+      - name: Display Connection Information
         run: |
           echo "=========================================="
-          echo "UBUNTU XFCE RDP - CONNECTION INFO"
+          echo "🎯 UBUNTU XFCE RDP - READY TO CONNECT"
           echo "=========================================="
-          echo "IP: $TAILSCALE_IP"
+          echo "IP Address: $TAILSCALE_IP"
           echo "Username: $RDP_USERNAME"
           echo "Password: $RDP_PASSWORD"
           echo "Port: 3389"
           echo ""
-          echo "If you get a black screen, try these solutions:"
-          echo "1. Wait 30-60 seconds after connecting"
-          echo "2. Try connecting multiple times"
-          echo "3. Use xfreerdp instead of Windows RDP:"
-          echo "   xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD +glyph-cache +boards"
+          echo "🔧 Connection Instructions:"
+          echo "1. Connect using Windows Remote Desktop"
+          echo "2. Or use xfreerdp on Linux:"
+          echo "   xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD /dynamic-resolution +clipboard"
+          echo ""
+          echo "⚠️  Troubleshooting Black Screen:"
+          echo "- Wait 30 seconds after connecting"
+          echo "- Try pressing Ctrl+Alt+Enter"
+          echo "- Try connecting 2-3 times"
+          echo "- Use xfreerdp if Windows RDP doesn't work"
           echo "=========================================="
 
-      - name: Keep Alive
+      - name: Keep Session Alive
         run: |
+          echo "🔄 RDP session is active and ready for connections"
+          echo "⏰ This session will remain active for 60 minutes"
+          
+          # Keep services running and show status
           for i in {1..60}; do
-            echo "RDP Active - $((60-i)) minutes left - IP: $TAILSCALE_IP"
+            minutes_left=$((60 - i))
+            echo "[$(date)] Session active - $minutes_left minutes remaining"
+            
+            # Check service status periodically
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "Service check:"
+              sudo systemctl is-active xrdp && echo "✅ xRDP: RUNNING" || echo "❌ xRDP: STOPPED"
+              sudo tailscale status > /dev/null && echo "✅ Tailscale: CONNECTED" || echo "❌ Tailscale: DISCONNECTED"
+            fi
+            
             sleep 60
           done
+          
+          echo "⏰ Session time limit reached - stopping"
