@@ -1,72 +1,73 @@
-name: Kali Linux Direct
+name: Kali Tools on Ubuntu
 
 on:
   workflow_dispatch:
 
 jobs:
-  kali-direct:
+  kali-tools:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Install Kali Packages on Ubuntu
+      - name: Install SSH and Basic Tools
         run: |
           sudo apt update
-          
-          # Add Kali repositories
-          echo 'deb https://http.kali.org/kali kali-rolling main non-free contrib' | sudo tee /etc/apt/sources.list.d/kali.list
-          wget 'https://archive.kali.org/archive-key.asc'
-          sudo apt-key add archive-key.asc
-          
-          sudo apt update
-          
-          # Install Kali tools
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-            kali-linux-headless \
-            metasploit-framework \
+          sudo apt install -y \
+            openssh-server \
             nmap \
-            wireshark \
+            curl \
+            wget \
+            git \
+            python3 \
+            python3-pip \
+            net-tools \
+            iputils-ping \
+            dnsutils \
+            whois \
             john \
             hydra \
             sqlmap \
             nikto \
             gobuster \
             exploitdb \
-            openssh-server
+            tshark
+
+      - name: Install Metasploit Standalone
+        run: |
+          # Download and install Metasploit standalone
+          curl https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb > msfinstall
+          chmod +x msfinstall
+          sudo ./msfinstall
 
       - name: Configure SSH
         run: |
           sudo systemctl enable ssh
           sudo systemctl start ssh
-          
-          # Allow root SSH login
           sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
-      - name: Create SSH User
+      - name: Create User
         run: |
-          PASSWORD=$(openssl rand -base64 12)
+          PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 10)
           USERNAME="kali"
-          
           sudo useradd -m -s /bin/bash $USERNAME
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo $USERNAME
-          
           echo "SSH_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "SSH_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=kali-direct-$GITHUB_RUN_ID
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=kali-tools-$GITHUB_RUN_ID
           sleep 10
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-      - name: Display Connection Info
+      - name: Display Info
         run: |
           echo "=========================================="
-          echo "🔐 KALI LINUX SSH ACCESS"
+          echo "🔐 PENETRATION TESTING SSH"
           echo "=========================================="
           echo "IP: $TAILSCALE_IP"
           echo "Username: $SSH_USERNAME"
@@ -75,13 +76,16 @@ jobs:
           echo ""
           echo "🔧 Connect: ssh $SSH_USERNAME@$TAILSCALE_IP"
           echo ""
-          echo "🛠️  Available Tools:"
-          echo "msfconsole, nmap, sqlmap, john, hydra, etc."
+          echo "🛠️  Tools Available:"
+          echo "• msfconsole (Metasploit)"
+          echo "• nmap, sqlmap, john, hydra"
+          echo "• nikto, gobuster, exploitdb"
+          echo "• wireshark (tshark)"
           echo "=========================================="
 
       - name: Keep Alive
         run: |
           for i in {1..360}; do
-            echo "Kali SSH Active - $((360-i)) minutes left"
+            echo "SSH Active - $((360-i)) minutes left"
             sleep 60
           done
