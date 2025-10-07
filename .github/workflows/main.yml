@@ -12,41 +12,76 @@ jobs:
       - name: Update System and Install Dependencies
         run: |
           sudo apt update
-          sudo apt install -y curl wget net-tools
+          sudo apt install -y curl wget net-tools dbus-x11
 
       - name: Install Desktop Environment
         run: |
-          # Install XFCE desktop and required packages
+          # Install XFCE with all necessary components
           sudo DEBIAN_FRONTEND=noninteractive apt install -y \
             xfce4 \
+            xfce4-session \
             xfce4-goodies \
             xorg \
-            dbus-x11 \
             xrdp \
             firefox \
             xfce4-terminal \
             thunar \
             mousepad \
             gedit \
-            network-manager
+            network-manager \
+            policykit-1-gnome \
+            xfce4-panel \
+            xfdesktop4 \
+            xfwm4
 
-      - name: Configure xRDP
+      - name: Configure D-Bus and XFCE
         run: |
-          # Create xsession file for XFCE
-          mkdir -p ~/.local/share/xfce4
-          echo "xfce4-session" > ~/.xsession
-          sudo cp ~/.xsession /etc/skel/
+          # Ensure D-Bus is running
+          sudo systemctl enable dbus
+          sudo systemctl start dbus
           
-          # Configure xrdp
+          # Create proper XFCE configuration
+          mkdir -p ~/.config/xfce4/xfconf/xfce-perchannel-xml
+          sudo mkdir -p /etc/xdg/xfce4
+
+      - name: Configure xRDP Properly
+        run: |
+          # Stop xrdp first
+          sudo systemctl stop xrdp
+          
+          # Create proper session configuration
+          sudo bash -c 'cat > /etc/xrdp/startwm.sh << "EOF"
+#!/bin/sh
+if [ -r /etc/default/locale ]; then
+  . /etc/default/locale
+  export LANG LANGUAGE
+fi
+
+export XDG_SESSION_TYPE=x11
+export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share/xubuntu:/usr/local/share:/usr/share:/var/lib/snapd/desktop
+export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
+
+# Start D-Bus if not running
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+  eval $(dbus-launch --sh-syntax --exit-with-session)
+fi
+
+# Start XFCE
+startxfce4
+EOF'
+          
+          sudo chmod +x /etc/xrdp/startwm.sh
+          
+          # Configure xrdp.ini
           sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
           sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
           
           # Add xrdp user to ssl-cert group
-          sudo adduser xrdp ssl-cert
+          sudo usermod -aG ssl-cert xrdp
           
-          # Enable and start xrdp
+          # Start xrdp service
           sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
+          sudo systemctl start xrdp
           
           echo "xRDP status:"
           sudo systemctl status xrdp --no-pager
@@ -55,46 +90,56 @@ jobs:
         run: |
           sudo apt install -y ufw
           sudo ufw allow 3389
-          sudo ufw allow ssh
           sudo ufw --force enable
           echo "Firewall status:"
           sudo ufw status
 
-      - name: Create RDP User
+      - name: Create RDP User with Proper Setup
         run: |
           # Generate secure password
           PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9!@#$%^&*' | head -c 16)
-          USERNAME="kaliuser"
+          USERNAME="rdpuser"
           
           # Create user
           sudo useradd -m -s /bin/bash $USERNAME
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo,audio,video $USERNAME
           
-          # Set up XFCE for user
-          sudo -u $USERNAME mkdir -p /home/$USERNAME/.config/xfce4
-          sudo -u $USERNAME bash -c "echo 'xfce4-session' > /home/$USERNAME/.xsession"
+          # Create proper XFCE configuration for the user
+          sudo -u $USERNAME mkdir -p /home/$USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
+          sudo -u $USERNAME mkdir -p /home/$USERNAME/.local/share/xfce4
+          
+          # Create proper .xsession file
+          sudo -u $USERNAME bash -c 'cat > /home/$USERNAME/.xsession << "EOF"
+#!/bin/sh
+export XDG_SESSION_TYPE=x11
+export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share/xubuntu:/usr/local/share:/usr/share:/var/lib/snapd/desktop
+export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
+
+# Start D-Bus
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+  eval $(dbus-launch --sh-syntax --exit-with-session)
+fi
+
+exec startxfce4
+EOF'
+          
+          sudo chmod +x /home/$USERNAME/.xsession
+          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
           
           echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
-          echo "✅ User $USERNAME created"
+          echo "✅ User $USERNAME created with proper XFCE setup"
 
       - name: Install Tailscale
         run: |
-          # Install Tailscale
           curl -fsSL https://tailscale.com/install.sh | sh
-          
-          # Verify installation
-          tailscale --version || echo "Tailscale installed"
 
       - name: Establish Tailscale Connection
         run: |
-          echo "🔑 Setting up Tailscale connection..."
+          echo "🔑 Setting up Tailscale..."
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=ubuntu-rdp-$GITHUB_RUN_ID
           
-          # Start Tailscale
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=github-ubuntu-rdp-$GITHUB_RUN_ID
-          
-          # Wait for IP
           TS_IP=""
           for i in {1..15}; do
               TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
@@ -102,45 +147,57 @@ jobs:
                   echo "✅ Tailscale IP: $TS_IP"
                   break
               fi
-              echo "Waiting for IP... ($i/15)"
               sleep 3
           done
           
           if [ -z "$TS_IP" ]; then
               echo "❌ No Tailscale IP"
-              sudo tailscale status
               exit 1
           fi
           
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-      - name: Verify Services
+      - name: Final Service Check
         run: |
-          echo "🔍 Service Status:"
+          echo "🔍 Final service verification..."
           sudo systemctl status xrdp --no-pager
           sudo tailscale status
-          sudo netstat -tlnp | grep :3389 || echo "Setting up RDP port..."
+          sudo netstat -tlnp | grep :3389 && echo "✅ RDP port listening" || echo "❌ RDP port not listening"
+          
+          # Test xfce session
+          echo "Testing XFCE session..."
+          sudo -u rdpuser timeout 5s startxfce4 || echo "XFCE test completed"
 
       - name: Display Connection Info
         run: |
           echo ""
           echo "=========================================="
-          echo "🖥️  UBUNTU RDP ACCESS"
+          echo "🖥️  UBUNTU XFCE RDP ACCESS"
           echo "=========================================="
           echo "IP: $TAILSCALE_IP"
           echo "User: $RDP_USERNAME"
           echo "Pass: $RDP_PASSWORD"
           echo "Port: 3389"
           echo ""
-          echo "Connect with:"
-          echo "xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD"
+          echo "📝 Connect using:"
+          echo "   xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD +clipboard"
+          echo "   or Windows Remote Desktop Connection"
+          echo ""
+          echo "⚠️  If connection fails, wait 30 seconds and try again"
           echo "=========================================="
           echo ""
 
-      - name: Keep Alive
+      - name: Keep Runner Active
         run: |
           echo "🔄 RDP session active for 60 minutes..."
           for i in {1..60}; do
-              echo "[$(date)] Active - $((60-i)) minutes left"
+              minutes_left=$((60 - i))
+              echo "[$(date)] RDP Active - $minutes_left minutes remaining"
+              
+              # Verify services are still running
+              sudo systemctl is-active xrdp > /dev/null || echo "⚠️  xRDP service stopped"
+              sudo tailscale status > /dev/null || echo "⚠️  Tailscale disconnected"
+              
               sleep 60
           done
+          echo "⏰ Time limit reached"
