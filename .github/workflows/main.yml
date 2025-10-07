@@ -16,45 +16,43 @@ jobs:
 
       - name: Install Desktop Environment
         run: |
-          # Install minimal XFCE desktop
+          # Install XFCE desktop and required packages
           sudo DEBIAN_FRONTEND=noninteractive apt install -y \
             xfce4 \
             xfce4-goodies \
             xorg \
             dbus-x11 \
             xrdp \
-            firefox-esr \
-            gnome-terminal \
-            file-manager-packages
+            firefox \
+            xfce4-terminal \
+            thunar \
+            mousepad \
+            gedit \
+            network-manager
 
       - name: Configure xRDP
         run: |
-          # Create xsession file
+          # Create xsession file for XFCE
           mkdir -p ~/.local/share/xfce4
           echo "xfce4-session" > ~/.xsession
           sudo cp ~/.xsession /etc/skel/
           
-          # Backup original xrdp config
-          sudo cp /etc/xrdp/xrdp.ini /etc/xrdp/xrdp.ini.backup
-          
-          # Configure xrdp.ini
+          # Configure xrdp
           sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
           sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
           
-          # Ensure xrdp user has proper permissions
+          # Add xrdp user to ssl-cert group
           sudo adduser xrdp ssl-cert
           
-          # Restart xrdp service
+          # Enable and start xrdp
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
           
-          # Check xrdp status
           echo "xRDP status:"
           sudo systemctl status xrdp --no-pager
 
       - name: Configure Firewall
         run: |
-          # Install and configure UFW
           sudo apt install -y ufw
           sudo ufw allow 3389
           sudo ufw allow ssh
@@ -66,136 +64,83 @@ jobs:
         run: |
           # Generate secure password
           PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9!@#$%^&*' | head -c 16)
-          USERNAME="kaliuser-$GITHUB_RUN_ID"
+          USERNAME="kaliuser"
           
-          # Create user with home directory
-          sudo useradd -m -s /bin/bash -G sudo,audio,video $USERNAME
+          # Create user
+          sudo useradd -m -s /bin/bash $USERNAME
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo,audio,video $USERNAME
           
-          # Set up XFCE for the new user
-          sudo mkdir -p /home/$USERNAME/.local/share/xfce4
-          sudo bash -c "echo 'xfce4-session' > /home/$USERNAME/.xsession"
-          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
+          # Set up XFCE for user
+          sudo -u $USERNAME mkdir -p /home/$USERNAME/.config/xfce4
+          sudo -u $USERNAME bash -c "echo 'xfce4-session' > /home/$USERNAME/.xsession"
           
           echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
-          
-          echo "✅ User $USERNAME created successfully"
+          echo "✅ User $USERNAME created"
 
       - name: Install Tailscale
         run: |
-          # Install Tailscale using the official method
+          # Install Tailscale
           curl -fsSL https://tailscale.com/install.sh | sh
           
           # Verify installation
-          which tailscale || echo "Tailscale not in PATH"
-          sudo which tailscale || echo "sudo tailscale not found"
+          tailscale --version || echo "Tailscale installed"
 
       - name: Establish Tailscale Connection
         run: |
-          echo "🔑 Using Tailscale auth key from secrets..."
+          echo "🔑 Setting up Tailscale connection..."
           
           # Start Tailscale
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=github-kali-$GITHUB_RUN_ID --accept-routes
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=github-ubuntu-rdp-$GITHUB_RUN_ID
           
-          # Wait for IP assignment with better error handling
-          echo "⏳ Waiting for Tailscale IP..."
+          # Wait for IP
           TS_IP=""
-          for i in {1..20}; do
-              TS_IP=$(sudo tailscale ip -4 2>/dev/null || echo "")
+          for i in {1..15}; do
+              TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
               if [ -n "$TS_IP" ]; then
-                  echo "✅ Tailscale IP assigned: $TS_IP"
+                  echo "✅ Tailscale IP: $TS_IP"
                   break
               fi
-              echo "Attempt $i/20: Waiting for Tailscale IP..."
+              echo "Waiting for IP... ($i/15)"
               sleep 3
           done
           
           if [ -z "$TS_IP" ]; then
-              echo "❌ Failed to get Tailscale IP after 20 attempts"
-              echo "Debug info:"
+              echo "❌ No Tailscale IP"
               sudo tailscale status
-              sudo tailscale netcheck
               exit 1
           fi
           
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          echo "✅ Tailscale connection established"
 
       - name: Verify Services
         run: |
-          echo "🔍 Verifying all services..."
-          
-          # Check xrdp
-          echo "xRDP Status:"
+          echo "🔍 Service Status:"
           sudo systemctl status xrdp --no-pager
-          
-          # Check Tailscale
-          echo "Tailscale Status:"
           sudo tailscale status
-          
-          # Check listening ports
-          echo "Listening ports:"
-          sudo netstat -tlnp | grep :3389 || echo "Port 3389 not listening"
-          
-          # Test local RDP connection
-          echo "Testing local RDP port..."
-          nc -z localhost 3389 && echo "✅ RDP port listening locally" || echo "❌ RDP port not listening locally"
+          sudo netstat -tlnp | grep :3389 || echo "Setting up RDP port..."
 
-      - name: Test RDP Connectivity
-        run: |
-          echo "🔍 Testing external RDP connectivity..."
-          echo "Tailscale IP: $TAILSCALE_IP"
-          
-          # Install netcat
-          sudo apt install -y netcat
-          
-          # Test from external perspective (using localhost since we're in Tailscale network)
-          if timeout 10 nc -z $TAILSCALE_IP 3389; then
-              echo "✅ RDP port 3389 is accessible via Tailscale"
-          else
-              echo "⚠️  RDP port not accessible via Tailscale, but continuing..."
-              # Don't exit here, as it might be a network timing issue
-          fi
-
-      - name: Display Connection Information
+      - name: Display Connection Info
         run: |
           echo ""
           echo "=========================================="
-          echo "🎯 KALI LINUX RDP ACCESS INFORMATION"
+          echo "🖥️  UBUNTU RDP ACCESS"
           echo "=========================================="
-          echo "IP Address: $TAILSCALE_IP"
-          echo "Username: $RDP_USERNAME"
-          echo "Password: $RDP_PASSWORD"
+          echo "IP: $TAILSCALE_IP"
+          echo "User: $RDP_USERNAME"
+          echo "Pass: $RDP_PASSWORD"
           echo "Port: 3389"
           echo ""
-          echo "📝 Connect using any RDP client:"
-          echo "   Windows: mstsc.exe"
-          echo "   Linux: xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD"
-          echo "   macOS: Microsoft Remote Desktop"
-          echo ""
-          echo "🔧 Troubleshooting:"
-          echo "   - Wait 1-2 minutes after workflow completes"
-          echo "   - Ensure Tailscale client is connected to same network"
-          echo "   - Check Tailscale admin console for device status"
+          echo "Connect with:"
+          echo "xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD"
           echo "=========================================="
           echo ""
 
-      - name: Keep Runner Active
+      - name: Keep Alive
         run: |
-          echo "🖥️  RDP session is being prepared..."
-          echo "⏰ Keeping runner alive for 60 minutes..."
-          
-          # Display status every minute
+          echo "🔄 RDP session active for 60 minutes..."
           for i in {1..60}; do
-              minutes_remaining=$((60 - i))
-              echo "[$(date)] RDP Active - $minutes_remaining minutes remaining"
-              echo "IP: $TAILSCALE_IP | User: $RDP_USERNAME"
-              
-              # Check services are still running
-              sudo systemctl is-active xrdp > /dev/null || echo "⚠️ xRDP service not running"
-              sudo tailscale status > /dev/null || echo "⚠️ Tailscale not connected"
-              
+              echo "[$(date)] Active - $((60-i)) minutes left"
               sleep 60
           done
-          echo "⏰ Time limit reached, stopping RDP session"
