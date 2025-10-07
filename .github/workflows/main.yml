@@ -16,22 +16,7 @@ jobs:
 
       - name: Install Desktop Environment
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-            xfce4 \
-            xfce4-session \
-            xfce4-goodies \
-            xorg \
-            xrdp \
-            firefox \
-            xfce4-terminal \
-            thunar \
-            mousepad \
-            gedit \
-            network-manager \
-            policykit-1-gnome \
-            xfce4-panel \
-            xfdesktop4 \
-            xfwm4
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-session xfce4-goodies xorg xrdp firefox xfce4-terminal thunar mousepad gedit network-manager policykit-1-gnome xfce4-panel xfdesktop4 xfwm4
 
       - name: Configure D-Bus and XFCE
         run: |
@@ -44,8 +29,8 @@ jobs:
         run: |
           sudo systemctl stop xrdp
           
-          # Create startwm.sh using echo commands to avoid YAML multi-line issues
-          sudo bash -c 'cat > /etc/xrdp/startwm.sh << "ENDFILE"
+          # Create startwm.sh using simple echo commands
+          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
 #!/bin/sh
 if [ -r /etc/default/locale ]; then
   . /etc/default/locale
@@ -61,23 +46,21 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
 fi
 
 startxfce4
-ENDFILE'
+EOF
           
           sudo chmod +x /etc/xrdp/startwm.sh
           sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
           sudo usermod -aG ssl-cert xrdp
           sudo systemctl enable xrdp
           sudo systemctl start xrdp
-          sudo systemctl status xrdp --no-pager
 
       - name: Configure Firewall
         run: |
           sudo apt install -y ufw
           sudo ufw allow 3389
           sudo ufw --force enable
-          sudo ufw status
 
-      - name: Create RDP User with Proper Setup
+      - name: Create RDP User
         run: |
           PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9!@#$%^&*' | head -c 16)
           USERNAME="rdpuser"
@@ -86,11 +69,8 @@ ENDFILE'
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo,audio,video $USERNAME
           
-          sudo -u $USERNAME mkdir -p /home/$USERNAME/.config/xfce4/xfconf/xfce-perchannel-xml
-          sudo -u $USERNAME mkdir -p /home/$USERNAME/.local/share/xfce4
-          
-          # Create .xsession file using echo
-          sudo -u $USERNAME bash -c 'cat > /home/$USERNAME/.xsession << "ENDFILE"
+          # Create .xsession file
+          sudo -u $USERNAME tee /home/$USERNAME/.xsession > /dev/null << 'EOF'
 #!/bin/sh
 export XDG_SESSION_TYPE=x11
 export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share/xubuntu:/usr/local/share:/usr/share:/var/lib/snapd/desktop
@@ -101,14 +81,13 @@ if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
 fi
 
 exec startxfce4
-ENDFILE'
+EOF
           
           sudo chmod +x /home/$USERNAME/.xsession
           sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
           
           echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
-          echo "User $USERNAME created"
 
       - name: Install Tailscale
         run: |
@@ -137,9 +116,9 @@ ENDFILE'
 
       - name: Final Service Check
         run: |
+          echo "Service Status:"
           sudo systemctl status xrdp --no-pager
           sudo tailscale status
-          sudo netstat -tlnp | grep :3389 && echo "RDP port listening"
 
       - name: Display Connection Info
         run: |
