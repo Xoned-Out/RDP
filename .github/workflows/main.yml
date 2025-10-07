@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: 3600
+    timeout-minutes: 60
 
     steps:
       - name: Update System and Install Dependencies
@@ -16,38 +16,27 @@ jobs:
 
       - name: Install Desktop Environment
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-session xfce4-goodies xorg xrdp firefox xfce4-terminal thunar mousepad gedit network-manager policykit-1-gnome xfce4-panel xfdesktop4 xfwm4
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-session xfce4-goodies
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y xorg xrdp firefox
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4-terminal thunar mousepad
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y policykit-1-gnome network-manager
 
       - name: Configure D-Bus and XFCE
         run: |
           sudo systemctl enable dbus
           sudo systemctl start dbus
-          mkdir -p ~/.config/xfce4/xfconf/xfce-perchannel-xml
-          sudo mkdir -p /etc/xdg/xfce4
 
-      - name: Configure xRDP Properly
+      - name: Configure xRDP
         run: |
           sudo systemctl stop xrdp
-          
-          # Create startwm.sh using simple echo commands
-          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
-#!/bin/sh
-if [ -r /etc/default/locale ]; then
-  . /etc/default/locale
-  export LANG LANGUAGE
-fi
-
-export XDG_SESSION_TYPE=x11
-export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share/xubuntu:/usr/local/share:/usr/share:/var/lib/snapd/desktop
-export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
-
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-  eval $(dbus-launch --sh-syntax --exit-with-session)
-fi
-
-startxfce4
-EOF
-          
+          echo '#!/bin/sh' | sudo tee /etc/xrdp/startwm.sh
+          echo 'export XDG_SESSION_TYPE=x11' | sudo tee -a /etc/xrdp/startwm.sh
+          echo 'export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share:/usr/local/share:/var/lib/snapd/desktop' | sudo tee -a /etc/xrdp/startwm.sh
+          echo 'export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg' | sudo tee -a /etc/xrdp/startwm.sh
+          echo 'if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then' | sudo tee -a /etc/xrdp/startwm.sh
+          echo '  eval $(dbus-launch --sh-syntax --exit-with-session)' | sudo tee -a /etc/xrdp/startwm.sh
+          echo 'fi' | sudo tee -a /etc/xrdp/startwm.sh
+          echo 'startxfce4' | sudo tee -a /etc/xrdp/startwm.sh
           sudo chmod +x /etc/xrdp/startwm.sh
           sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
           sudo usermod -aG ssl-cert xrdp
@@ -62,30 +51,11 @@ EOF
 
       - name: Create RDP User
         run: |
-          PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9!@#$%^&*' | head -c 16)
+          PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 12)
           USERNAME="rdpuser"
-          
           sudo useradd -m -s /bin/bash $USERNAME
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo,audio,video $USERNAME
-          
-          # Create .xsession file
-          sudo -u $USERNAME tee /home/$USERNAME/.xsession > /dev/null << 'EOF'
-#!/bin/sh
-export XDG_SESSION_TYPE=x11
-export XDG_DATA_DIRS=/usr/share/xfce4:/usr/share/xubuntu:/usr/local/share:/usr/share:/var/lib/snapd/desktop
-export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xdg
-
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-  eval $(dbus-launch --sh-syntax --exit-with-session)
-fi
-
-exec startxfce4
-EOF
-          
-          sudo chmod +x /home/$USERNAME/.xsession
-          sudo chown -R $USERNAME:$USERNAME /home/$USERNAME/
-          
+          sudo usermod -aG sudo $USERNAME
           echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
@@ -96,45 +66,22 @@ EOF
       - name: Establish Tailscale Connection
         run: |
           sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=ubuntu-rdp-$GITHUB_RUN_ID
-          
-          TS_IP=""
-          for i in {1..15}; do
-            TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
-            if [ -n "$TS_IP" ]; then
-              echo "Tailscale IP: $TS_IP"
-              break
-            fi
-            sleep 3
-          done
-          
-          if [ -z "$TS_IP" ]; then
-            echo "No Tailscale IP"
-            exit 1
-          fi
-          
+          sleep 10
+          TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-
-      - name: Final Service Check
-        run: |
-          echo "Service Status:"
-          sudo systemctl status xrdp --no-pager
-          sudo tailscale status
 
       - name: Display Connection Info
         run: |
-          echo "=========================================="
-          echo "UBUNTU XFCE RDP ACCESS"
-          echo "=========================================="
+          echo "=== RDP Connection Details ==="
           echo "IP: $TAILSCALE_IP"
-          echo "User: $RDP_USERNAME" 
-          echo "Pass: $RDP_PASSWORD"
+          echo "Username: $RDP_USERNAME"
+          echo "Password: $RDP_PASSWORD"
           echo "Port: 3389"
-          echo "=========================================="
+          echo "=============================="
 
       - name: Keep Runner Active
         run: |
           for i in {1..60}; do
-            minutes_left=$((60 - i))
-            echo "RDP Active - $minutes_left minutes remaining"
+            echo "RDP active - $(expr 60 - $i) minutes remaining"
             sleep 60
           done
