@@ -5,114 +5,145 @@ on:
 
 jobs:
   secure-rdp:
-    runs-on: kali-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Install and Configure xRDP
+      - name: Update System and Install Kali Desktop
         run: |
-          # Update system and install xRDP
           sudo apt update
-          sudo apt install -y xrdp xfce4 xfce4-goodies
-          
+          sudo apt upgrade -y
+          sudo apt install -y kali-desktop-xfce xrdp xorg dbus-x11
+          sudo apt install -y firefox-esr gnome-terminal net-tools
+
+      - name: Configure xRDP
+        run: |
           # Configure xRDP to use XFCE
           echo "xfce4-session" > ~/.xsession
           sudo cp ~/.xsession /etc/skel/
           
-          # Configure xRDP to use X11
-          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
+          # Configure xRDP settings
           sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
           
-          # Enable and start xRDP service
+          # Enable xRDP service
           sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
+          sudo systemctl start xrdp
 
-      - name: Configure Firewall for RDP
+      - name: Configure Firewall
         run: |
-          # Allow RDP port through firewall
-          sudo ufw allow 3389/tcp
+          sudo ufw allow 3389
           sudo ufw --force enable
 
       - name: Create RDP User with Secure Password
         run: |
           # Generate secure password
-          PASSWORD=$(openssl rand -base64 32 | tr -d '/+' | cut -c1-16)
-          PASSWORD="${PASSWORD}$(openssl rand -base64 32 | tr -dc '!@#$%^&*' | cut -c1-4)"
+          PASSWORD=$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9!@#$%^&*' | head -c 16)
+          USERNAME="kali-rdp-user"
           
-          # Create user and set password
-          sudo useradd -m -s /bin/bash rdpuser
-          echo "rdpuser:${PASSWORD}" | sudo chpasswd
+          # Create user
+          sudo useradd -m -s /bin/bash $USERNAME
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
           
-          # Add user to sudo and other necessary groups
-          sudo usermod -aG sudo rdpuser
-          sudo usermod -aG audio rdpuser
-          sudo usermod -aG video rdpuser
+          # Add to necessary groups
+          sudo usermod -aG sudo $USERNAME
+          sudo usermod -aG audio $USERNAME
+          sudo usermod -aG video $USERNAME
           
-          echo "RDP_CREDS=User: rdpuser | Password: $PASSWORD" >> $GITHUB_ENV
+          echo "RDP_USERNAME=$USERNAME" >> $GITHUB_ENV
+          echo "RDP_PASSWORD=$PASSWORD" >> $GITHUB_ENV
           
           # Verify user creation
-          if ! id "rdpuser" &>/dev/null; then
-              echo "User creation failed"
+          if ! id "$USERNAME" &>/dev/null; then
+              echo "❌ User creation failed"
               exit 1
           fi
+          echo "✅ User $USERNAME created successfully"
 
       - name: Install Tailscale
         run: |
-          # Add Tailscale repository and install
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+          # Install Tailscale
+          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
           
           sudo apt update
           sudo apt install -y tailscale
 
       - name: Establish Tailscale Connection
         run: |
-          # Start Tailscale and connect
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-kali-runner-$GITHUB_RUN_ID
+          # Start Tailscale with auth key from secrets
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=github-kali-$GITHUB_RUN_ID
           
-          # Wait for Tailscale IP assignment
+          # Wait for IP assignment
+          echo "⏳ Waiting for Tailscale IP..."
           TS_IP=""
-          for i in {1..10}; do
-              TS_IP=$(tailscale ip -4)
+          for i in {1..15}; do
+              TS_IP=$(sudo tailscale ip -4 2>/dev/null || echo "")
               if [ -n "$TS_IP" ]; then
+                  echo "✅ Tailscale IP: $TS_IP"
                   break
               fi
+              echo "Attempt $i/15: Waiting for Tailscale IP..."
               sleep 5
           done
           
           if [ -z "$TS_IP" ]; then
-              echo "Tailscale IP not assigned. Exiting."
+              echo "❌ Failed to get Tailscale IP"
+              sudo tailscale status
               exit 1
           fi
+          
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
       - name: Verify RDP Accessibility
         run: |
+          echo "🔍 Testing RDP connectivity..."
           echo "Tailscale IP: $TAILSCALE_IP"
           
-          # Test RDP port connectivity
-          if ! nc -z -w 5 $TAILSCALE_IP 3389; then
-              echo "TCP connection to RDP port 3389 failed"
+          # Install netcat if not present
+          sudo apt install -y netcat
+          
+          # Test RDP port
+          if nc -z -w 10 $TAILSCALE_IP 3389; then
+              echo "✅ RDP port 3389 is accessible"
+          else
+              echo "❌ RDP port 3389 is not accessible"
+              echo "Checking xRDP status..."
+              sudo systemctl status xrdp
               exit 1
           fi
-          echo "TCP connectivity successful!"
 
-      - name: Install Additional Desktop Utilities
+      - name: Display Connection Information
         run: |
-          # Install useful desktop applications
-          sudo apt install -y firefox-esr file-manager-packages \
-                           gnome-terminal net-tools
+          echo ""
+          echo "=========================================="
+          echo "🎯 KALI LINUX RDP ACCESS INFORMATION"
+          echo "=========================================="
+          echo "IP Address: $TAILSCALE_IP"
+          echo "Username: $RDP_USERNAME"
+          echo "Password: $RDP_PASSWORD"
+          echo "Port: 3389"
+          echo ""
+          echo "📝 Connect using:"
+          echo "   xfreerdp /v:$TAILSCALE_IP /u:$RDP_USERNAME /p:$RDP_PASSWORD"
+          echo "   or Windows Remote Desktop Connection"
+          echo ""
+          echo "⏰ This runner will stay active for 60 minutes"
+          echo "=========================================="
+          echo ""
 
-      - name: Maintain Connection
+      - name: Keep Runner Active
         run: |
-          echo -e "\n=== RDP ACCESS ==="
-          echo "Address: $TAILSCALE_IP"
-          echo "Username: rdpuser"
-          echo "Password: $(echo $RDP_CREDS | cut -d'|' -f2 | cut -d':' -f2-)"
-          echo "==================\n"
+          # Install dependencies for desktop functionality
+          sudo apt install -y xfce4-terminal mousepad thunar
           
-          # Keep runner active
-          while true; do
-              echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              sleep 300
+          echo "🖥️  RDP session is ready and active"
+          echo "⏰ Keeping runner alive for 60 minutes..."
+          
+          # Countdown timer (60 minutes)
+          for i in {1..60}; do
+              minutes_remaining=$((60 - i))
+              echo "[$(date)] RDP Active - $minutes_remaining minutes remaining - Use 'Cancel workflow' to stop"
+              sleep 60
           done
+          echo "⏰ Time limit reached, stopping RDP session"
