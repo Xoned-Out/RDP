@@ -1,56 +1,123 @@
-Run sudo apt update
-WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
-Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
-Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
-Hit:6 https://packages.microsoft.com/repos/azure-cli noble InRelease
-Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
-Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
-Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
-Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
-Get:8 https://packages.microsoft.com/ubuntu/24.04/prod noble/main armhf Packages [10.5 kB]
-Get:9 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [59.8 kB]
-Get:10 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [42.7 kB]
-Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1490 kB]
-Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [287 kB]
-Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [175 kB]
-Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 c-n-f Metadata [15.3 kB]
-Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1487 kB]
-Get:16 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [300 kB]
-Get:17 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [378 kB]
-Get:18 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 c-n-f Metadata [31.1 kB]
-Get:19 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [2068 kB]
-Get:20 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [467 kB]
-Get:21 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Components [212 B]
-Get:22 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse Translation-en [6116 B]
-Get:23 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
-Get:24 http://azure.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [7160 B]
-Get:25 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [11.0 kB]
-Get:26 http://azure.archive.ubuntu.com/ubuntu noble-backports/restricted amd64 Components [216 B]
-Get:27 http://azure.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Components [212 B]
-Get:28 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [1213 kB]
-Get:29 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [202 kB]
-Get:30 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Components [21.6 kB]
-Get:31 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 c-n-f Metadata [8748 B]
-Get:32 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [882 kB]
-Get:33 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [196 kB]
-Get:34 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Components [52.2 kB]
-Get:35 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 c-n-f Metadata [18.1 kB]
-Get:36 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1967 kB]
-Get:37 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted Translation-en [448 kB]
-Get:38 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Components [212 B]
-Get:39 http://azure.archive.ubuntu.com/ubuntu noble-security/multiverse Translation-en [5844 B]
-Get:40 http://azure.archive.ubuntu.com/ubuntu noble-security/multiverse amd64 Components [212 B]
-Fetched 12.2 MB in 2s (7561 kB/s)
-Reading package lists...
-Building dependency tree...
-Reading state information...
-21 packages can be upgraded. Run 'apt list --upgradable' to see them.
-WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
-Reading package lists...
-Building dependency tree...
-Reading state information...
-Package netcat is a virtual package provided by:
-  netcat-traditional 1.10-48
-  netcat-openbsd 1.226-1ubuntu2
-E: Package 'netcat' has no installation candidate
-Error: Process completed with exit code 100.
+name: Kali Tools SSH
+
+on:
+  workflow_dispatch:
+
+jobs:
+  kali-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install System Tools
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            openssh-server \
+            nmap \
+            curl \
+            wget \
+            git \
+            python3 \
+            python3-pip \
+            net-tools \
+            iputils-ping \
+            tshark \
+            john \
+            hydra \
+            sqlmap \
+            nikto \
+            gobuster \
+            dirb \
+            netcat
+
+      - name: Install Metasploit
+        run: |
+          # Download and install Metasploit
+          wget https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb -O msfinstall
+          chmod +x msfinstall
+          sudo ./msfinstall
+
+      - name: Install Python Tools
+        run: |
+          sudo pip3 install \
+            requests \
+            beautifulsoup4 \
+            scapy \
+            cryptography \
+            pycryptodome \
+            paramiko
+
+      - name: Configure SSH
+        run: |
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+          sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+
+      - name: Create User
+        run: |
+          PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 10)
+          USERNAME="hacker"
+          sudo useradd -m -s /bin/bash $USERNAME
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo $USERNAME
+          echo "SSH_USERNAME=$USERNAME" >> $GITHUB_ENV
+          echo "SSH_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=kali-tools-$GITHUB_RUN_ID
+          sleep 10
+          TS_IP=$(tailscale ip -4)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Download Additional Tools
+        run: |
+          # Download wordlists
+          sudo mkdir -p /usr/share/wordlists
+          sudo wget -O /usr/share/wordlists/rockyou.txt.gz https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt.gz
+          sudo gunzip /usr/share/wordlists/rockyou.txt.gz || true
+          
+          # Download seclists
+          sudo git clone https://github.com/danielmiessler/SecLists /usr/share/seclists || true
+
+      - name: Display Connection Info
+        run: |
+          echo "=========================================="
+          echo "🔐 PENETRATION TESTING SSH"
+          echo "=========================================="
+          echo "IP: $TAILSCALE_IP"
+          echo "Username: $SSH_USERNAME"
+          echo "Password: $SSH_PASSWORD"
+          echo "Port: 22"
+          echo ""
+          echo "🔧 Connect: ssh $SSH_USERNAME@$TAILSCALE_IP"
+          echo ""
+          echo "🛠️  Available Tools:"
+          echo "• msfconsole (Metasploit)"
+          echo "• nmap"
+          echo "• sqlmap" 
+          echo "• john"
+          echo "• hydra"
+          echo "• nikto"
+          echo "• gobuster"
+          echo "• dirb"
+          echo "• tshark"
+          echo "• python3 with security libraries"
+          echo "• wordlists: rockyou.txt, SecLists"
+          echo ""
+          echo "💡 Example Commands:"
+          echo "msfconsole"
+          echo "nmap -sV target.com"
+          echo "sqlmap -u 'http://test.com' --batch"
+          echo "hydra -l user -P /usr/share/wordlists/rockyou.txt ssh://target"
+          echo "=========================================="
+
+      - name: Keep Alive
+        run: |
+          for i in {1..360}; do
+            echo "SSH Active - $((360-i)) minutes left"
+            sleep 60
+          done
