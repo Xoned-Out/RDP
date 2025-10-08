@@ -1,15 +1,15 @@
-name: Kali Tools on Ubuntu
+name: Penetration Testing SSH
 
 on:
   workflow_dispatch:
 
 jobs:
-  kali-tools:
+  pentest-ssh:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Install SSH and Basic Tools
+      - name: Install Base Tools
         run: |
           sudo apt update
           sudo apt install -y \
@@ -22,34 +22,40 @@ jobs:
             python3-pip \
             net-tools \
             iputils-ping \
-            dnsutils \
-            whois \
+            tshark \
             john \
             hydra \
             sqlmap \
             nikto \
             gobuster \
-            exploitdb \
-            tshark
+            dirb
 
-      - name: Install Metasploit Standalone
+      - name: Install Metasploit
         run: |
-          # Download and install Metasploit standalone
+          # Install Metasploit via rapid7 installer
           curl https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb > msfinstall
-          chmod +x msfinstall
+          chmod 755 msfinstall
           sudo ./msfinstall
+
+      - name: Install Additional Tools via pip
+        run: |
+          sudo pip3 install \
+            requests \
+            beautifulsoup4 \
+            scapy \
+            pycrypto
 
       - name: Configure SSH
         run: |
           sudo systemctl enable ssh
           sudo systemctl start ssh
-          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo systemctl restart ssh
 
       - name: Create User
         run: |
           PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 10)
-          USERNAME="kali"
+          USERNAME="pentester"
           sudo useradd -m -s /bin/bash $USERNAME
           echo "$USERNAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo $USERNAME
@@ -59,7 +65,7 @@ jobs:
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=kali-tools-$GITHUB_RUN_ID
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=pentest-ssh-$GITHUB_RUN_ID
           sleep 10
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
@@ -76,11 +82,17 @@ jobs:
           echo ""
           echo "🔧 Connect: ssh $SSH_USERNAME@$TAILSCALE_IP"
           echo ""
-          echo "🛠️  Tools Available:"
+          echo "🛠️  Available Tools:"
           echo "• msfconsole (Metasploit)"
-          echo "• nmap, sqlmap, john, hydra"
-          echo "• nikto, gobuster, exploitdb"
-          echo "• wireshark (tshark)"
+          echo "• nmap"
+          echo "• sqlmap"
+          echo "• john"
+          echo "• hydra"
+          echo "• nikto"
+          echo "• gobuster"
+          echo "• dirb"
+          echo "• tshark"
+          echo "• python3 with hacking libraries"
           echo "=========================================="
 
       - name: Keep Alive
