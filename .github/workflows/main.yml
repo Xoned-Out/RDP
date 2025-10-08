@@ -1,155 +1,123 @@
-name: Kali Linux SSH
+name: Kali Tools SSH
 
 on:
   workflow_dispatch:
 
 jobs:
-  kali-ssh:
+  kali-tools:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: Setup Docker
+      - name: Install System Tools
         run: |
           sudo apt update
-          sudo apt install -y docker.io curl
-          sudo systemctl start docker
-          sudo systemctl enable docker
+          sudo apt install -y \
+            openssh-server \
+            nmap \
+            curl \
+            wget \
+            git \
+            python3 \
+            python3-pip \
+            net-tools \
+            iputils-ping \
+            tshark \
+            john \
+            hydra \
+            sqlmap \
+            nikto \
+            gobuster \
+            dirb \
+            netcat
 
-      - name: Create Kali Container
+      - name: Install Metasploit
         run: |
-          # Generate random password
+          # Download and install Metasploit
+          wget https://raw.githubusercontent.com/rapid7/metasploit-omnibus/master/config/templates/metasploit-framework-wrappers/msfupdate.erb -O msfinstall
+          chmod +x msfinstall
+          sudo ./msfinstall
+
+      - name: Install Python Tools
+        run: |
+          sudo pip3 install \
+            requests \
+            beautifulsoup4 \
+            scapy \
+            cryptography \
+            pycryptodome \
+            paramiko
+
+      - name: Configure SSH
+        run: |
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+          sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+
+      - name: Create User
+        run: |
           PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 10)
-          
-          # Create Kali container with SSH
-          sudo docker run -d \
-            --name kali-ssh \
-            -p 22:22 \
-            kalilinux/kali-rolling \
-            /bin/bash -c '
-            apt update -y && \
-            DEBIAN_FRONTEND=noninteractive apt install -y openssh-server sudo && \
-            echo "root:$PASSWORD" | chpasswd && \
-            sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config && \
-            mkdir -p /var/run/sshd && \
-            /usr/sbin/sshd -D
-            '
-          
+          USERNAME="hacker"
+          sudo useradd -m -s /bin/bash $USERNAME
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo $USERNAME
+          echo "SSH_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "SSH_PASSWORD=$PASSWORD" >> $GITHUB_ENV
-          sleep 15
-
-      - name: Install Kali Tools in Container
-        run: |
-          # Update Kali and install tools
-          sudo docker exec kali-ssh /bin/bash -c '
-            export DEBIAN_FRONTEND=noninteractive
-            apt update -y
-            apt install -y \
-              metasploit-framework \
-              nmap \
-              wireshark \
-              tshark \
-              john \
-              hydra \
-              sqlmap \
-              nikto \
-              gobuster \
-              dirb \
-              aircrack-ng \
-              burpsuite \
-              curl \
-              wget \
-              git \
-              python3 \
-              python3-pip \
-              net-tools \
-              iputils-ping \
-              exploitdb \
-              wordlists
-          '
-
-      - name: Install Python Tools in Container
-        run: |
-          # Install modern Python security tools
-          sudo docker exec kali-ssh /bin/bash -c '
-            pip3 install \
-              requests \
-              beautifulsoup4 \
-              scapy \
-              cryptography \
-              pycryptodome \
-              paramiko \
-              impacket
-          '
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=kali-ssh-$GITHUB_RUN_ID
-          sleep 15
+          sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname=kali-tools-$GITHUB_RUN_ID
+          sleep 10
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
+      - name: Download Additional Tools
+        run: |
+          # Download wordlists
+          sudo mkdir -p /usr/share/wordlists
+          sudo wget -O /usr/share/wordlists/rockyou.txt.gz https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt.gz
+          sudo gunzip /usr/share/wordlists/rockyou.txt.gz || true
+          
+          # Download seclists
+          sudo git clone https://github.com/danielmiessler/SecLists /usr/share/seclists || true
+
       - name: Display Connection Info
         run: |
-          echo ""
           echo "=========================================="
-          echo "🔐 KALI LINUX SSH ACCESS"
+          echo "🔐 PENETRATION TESTING SSH"
           echo "=========================================="
-          echo "Tailscale IP: $TAILSCALE_IP"
-          echo "SSH Port: 22"
-          echo "Username: root"
+          echo "IP: $TAILSCALE_IP"
+          echo "Username: $SSH_USERNAME"
           echo "Password: $SSH_PASSWORD"
+          echo "Port: 22"
           echo ""
-          echo "🔧 SSH Command:"
-          echo "ssh -o StrictHostKeyChecking=no root@$TAILSCALE_IP"
+          echo "🔧 Connect: ssh $SSH_USERNAME@$TAILSCALE_IP"
           echo ""
-          echo "🛠️  Installed Tools:"
-          echo "• Metasploit Framework (msfconsole)"
-          echo "• Nmap"
-          echo "• Wireshark/Tshark"
-          echo "• John the Ripper"
-          echo "• Hydra"
-          echo "• SQLMap"
-          echo "• Nikto"
-          echo "• Gobuster"
-          echo "• Dirb"
-          echo "• Aircrack-ng"
-          echo "• Burp Suite"
-          echo "• ExploitDB"
-          echo "• Python: requests, scapy, cryptography, impacket"
+          echo "🛠️  Available Tools:"
+          echo "• msfconsole (Metasploit)"
+          echo "• nmap"
+          echo "• sqlmap" 
+          echo "• john"
+          echo "• hydra"
+          echo "• nikto"
+          echo "• gobuster"
+          echo "• dirb"
+          echo "• tshark"
+          echo "• python3 with security libraries"
+          echo "• wordlists: rockyou.txt, SecLists"
           echo ""
-          echo "💡 Quick Start:"
+          echo "💡 Example Commands:"
           echo "msfconsole"
-          echo "nmap -sV scanme.nmap.org"
-          echo "sqlmap -h"
+          echo "nmap -sV target.com"
+          echo "sqlmap -u 'http://test.com' --batch"
+          echo "hydra -l user -P /usr/share/wordlists/rockyou.txt ssh://target"
           echo "=========================================="
 
-      - name: Keep Container Running
+      - name: Keep Alive
         run: |
-          echo "🔄 Kali Linux container is running..."
-          echo "⏰ This session will remain active for 6 hours"
-          
-          counter=0
-          while [ $counter -lt 360 ]; do
-            minutes_left=$((360 - counter))
-            echo "[$(date)] Kali SSH Active - $minutes_left minutes remaining"
-            
-            # Check container status
-            if ! sudo docker ps | grep -q kali-ssh; then
-              echo "⚠️  Container not running, starting..."
-              sudo docker start kali-ssh || true
-            fi
-            
-            # Check Tailscale
-            if ! tailscale status > /dev/null 2>&1; then
-              echo "🔄 Reconnecting Tailscale..."
-              sudo tailscale up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" || true
-            fi
-            
-            counter=$((counter + 1))
+          for i in {1..360}; do
+            echo "SSH Active - $((360-i)) minutes left"
             sleep 60
           done
-          
-          echo "⏰ Time limit reached - stopping container"
-          sudo docker stop kali-ssh
