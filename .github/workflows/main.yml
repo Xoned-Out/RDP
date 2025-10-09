@@ -125,11 +125,20 @@ jobs:
             conn.Write([]byte("Password: "))
             password, _ := reader.ReadString('\n')
             
-            if strings.TrimSpace(username) == "admin" && strings.TrimSpace(password) == "darkx2024" {
+            // Fix: Properly trim whitespace and newlines
+            username = strings.TrimSpace(username)
+            password = strings.TrimSpace(password)
+            
+            // Debug output to see what's being received
+            log.Printf("Login attempt: username='%s' password='%s'", username, password)
+            
+            if username == "admin" && password == "darkx2024" {
                 conn.Write([]byte("Authentication successful!\n"))
+                log.Printf("Successful login from %s", conn.RemoteAddr())
                 showDashboard(conn, reader)
             } else {
                 conn.Write([]byte("Authentication failed!\n"))
+                log.Printf("Failed login attempt from %s", conn.RemoteAddr())
             }
         }
         
