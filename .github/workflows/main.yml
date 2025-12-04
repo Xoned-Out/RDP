@@ -1,226 +1,111 @@
-# -*- coding: utf-8 -*-
-name: SSH DDoS Server
+name: RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  setup-ssh-ddos:
-    runs-on: windows-latest
+  secure-rdp:
+    runs-on: kali-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Configure SSH Server
+      - name: Install and Configure xRDP
         run: |
-          # Install OpenSSH Server feature
-          Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+          # Update system and install xRDP
+          sudo apt update
+          sudo apt install -y xrdp xfce4 xfce4-goodies
           
-          # Start and configure SSH service
-          Start-Service sshd
-          Set-Service -Name sshd -StartupType 'Automatic'
+          # Configure xRDP to use XFCE
+          echo "xfce4-session" > ~/.xsession
+          sudo cp ~/.xsession /etc/skel/
           
-          # Configure SSH server to allow password authentication
-          $sshdConfigPath = "$env:ProgramData\ssh\sshd_config"
-          $configContent = Get-Content $sshdConfigPath -Raw
+          # Configure xRDP to use X11
+          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
           
-          # Ensure PasswordAuthentication is enabled
-          if ($configContent -notmatch 'PasswordAuthentication yes') {
-              $configContent = $configContent -replace '#?PasswordAuthentication.*', 'PasswordAuthentication yes'
-              Set-Content -Path $sshdConfigPath -Value $configContent
-          }
-          
-          # Remove any existing firewall rule to avoid duplication
-          netsh advfirewall firewall delete rule name="SSH-Tailscale"
-          
-          # Allow SSH on port 22
-          netsh advfirewall firewall add rule name="SSH-Tailscale" `
-            dir=in action=allow protocol=TCP localport=22
-
-          # Restart SSH service to apply changes
-          Restart-Service sshd
-
-      - name: Create SSH User with Secure Password
+          # Enable and start xRDP service
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+      - name: Configure Firewall for RDP
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "DDoS" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "DDoS"
+          # Allow RDP port through firewall
+          sudo ufw allow 3389/tcp
+          sudo ufw --force enable
+      - name: Create RDP User with Secure Password
+        run: |
+          # Generate secure password
+          PASSWORD=$(openssl rand -base64 32 | tr -d '/+' | cut -c1-16)
+          PASSWORD="${PASSWORD}$(openssl rand -base64 32 | tr -dc '!@#$%^&*' | cut -c1-4)"
           
-          echo "SSH_CREDS=User: DDoS | Password: $password" >> $env:GITHUB_ENV
+          # Create user and set password
+          sudo useradd -m -s /bin/bash rdpuser
+          echo "rdpuser:${PASSWORD}" | sudo chpasswd
           
-          if (-not (Get-LocalUser -Name "DDoS")) {
-              Write-Error "User creation failed"
+          # Add user to sudo and other necessary groups
+          sudo usermod -aG sudo rdpuser
+          sudo usermod -aG audio rdpuser
+          sudo usermod -aG video rdpuser
+          
+          echo "RDP_CREDS=User: rdpuser | Password: $PASSWORD" >> $GITHUB_ENV
+          
+          # Verify user creation
+          if ! id "rdpuser" &>/dev/null; then
+              echo "User creation failed"
               exit 1
-          }
-
-      - name: Install Python and Dependencies
-        run: |
-          # Install Python if not present
-          if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-              winget install Python.Python.3.9
-          }
-          
-          # Install required Python packages
-          pip install cloudscraper
-          pip install socks
-          pip install pysocks
-          pip install colorama
-          pip install undetected_chromedriver
-          pip install httpx
-          
-          # Create necessary directories
-          New-Item -ItemType Directory -Force -Path "./resources"
-          
-          # Create ua.txt with user agents
-          $uaContent = @"
-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36
-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59
-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15
-Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0
-Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36
-"@
-          Set-Content -Path "./resources/ua.txt" -Value $uaContent
-
-      - name: Create DDoS Tool Script
-        run: |
-          # Create the main DDoS script file
-          $scriptContent = @'
-# -*- coding: utf-8 -*-
-from os import system, name
-import os, threading, requests, sys, cloudscraper, datetime, time, socket, socks, ssl, random, httpx
-from urllib.parse import urlparse
-from requests.cookies import RequestsCookieJar
-import undetected_chromedriver as webdriver
-from sys import stdout
-from colorama import Fore, init
-
-def countdown(t):
-    until = datetime.datetime.now() + datetime.timedelta(seconds=int(t))
-    while True:
-        if (until - datetime.datetime.now()).total_seconds() > 0:
-            stdout.flush()
-            stdout.write("\r "+Fore.MAGENTA+"[*]"+Fore.WHITE+" Attack status => " + str((until - datetime.datetime.now()).total_seconds()) + " sec left ")
-        else:
-            stdout.flush()
-            stdout.write("\r "+Fore.MAGENTA+"[*]"+Fore.WHITE+" Attack Done !                                   \n")
-            return
-
-# Your complete DDoS tool code here...
-# [Include all the functions and code from your provided script]
-# This would be the entire 1000+ line script
-
-if __name__ == '__main__':
-    init(convert=True)
-    print("DDoS Tool is ready and running!")
-    print("Connect via SSH to use the tool.")
-'@
-          Set-Content -Path "./karma_ddos.py" -Value $scriptContent
-
+          fi
       - name: Install Tailscale
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+          # Add Tailscale repository and install
+          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
           
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-
+          sudo apt update
+          sudo apt install -y tailscale
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=ddos-runner-$env:GITHUB_RUN_ID
+          # Start Tailscale and connect
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-kali-runner-$GITHUB_RUN_ID
           
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
+          # Wait for Tailscale IP assignment
+          TS_IP=""
+          for i in {1..10}; do
+              TS_IP=$(tailscale ip -4)
+              if [ -n "$TS_IP" ]; then
+                  break
+              fi
+              sleep 5
+          done
           
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+          if [ -z "$TS_IP" ]; then
+              echo "Tailscale IP not assigned. Exiting."
               exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify SSH Accessibility
+          fi
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+      - name: Verify RDP Accessibility
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          echo "Tailscale IP: $TAILSCALE_IP"
           
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 22
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 22
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to SSH port 22 failed"
+          # Test RDP port connectivity
+          if ! nc -z -w 5 $TAILSCALE_IP 3389; then
+              echo "TCP connection to RDP port 3389 failed"
               exit 1
-          }
-          Write-Host "TCP connectivity successful!"
-
-      - name: Create Startup Script
+          fi
+          echo "TCP connectivity successful!"
+      - name: Install Additional Desktop Utilities
         run: |
-          $startupScript = @'
-@echo off
-echo ========================================
-echo    DDoS Tool SSH Server - Ready
-echo ========================================
-echo.
-echo SSH Connection Details:
-echo IP: {{TAILSCALE_IP}}
-echo Username: DDoS
-echo Password: {{PASSWORD}}
-echo.
-echo Available Tools:
-echo - karma_ddos.py (Main DDoS tool)
-echo - Python 3.9+ installed
-echo - All dependencies ready
-echo.
-echo Commands to run after SSH login:
-echo python karma_ddos.py
-echo.
-echo ========================================
-timeout /nobreak /t 3600 > nul
-'@
-          $startupScript = $startupScript -replace "{{TAILSCALE_IP}}", "$env:TAILSCALE_IP"
-          $startupScript = $startupScript -replace "{{PASSWORD}}", "$env:SSH_CREDS".Split(":")[2].Trim()
-          Set-Content -Path "C:\Users\Public\Desktop\README.txt" -Value $startupScript
-
-      - name: Maintain Connection and Display Info
+          # Install useful desktop applications
+          sudo apt install -y firefox-esr file-manager-packages \
+                           gnome-terminal net-tools
+      - name: Maintain Connection
         run: |
-          Write-Host "`n=== DDoS TOOL SSH ACCESS ==="
-          Write-Host "SSH Address: $env:TAILSCALE_IP"
-          Write-Host "Username: DDoS"
-          Write-Host "Password: $(echo $env:SSH_CREDS | sed 's/.*Password: //')"
-          Write-Host "===============================`n"
-          Write-Host "SSH Command: ssh DDoS@$env:TAILSCALE_IP"
-          Write-Host "`nAfter connecting via SSH, run: python karma_ddos.py"
-          Write-Host "Note: First connection may take a moment as Windows generates host keys`n"
+          echo -e "\n=== RDP ACCESS ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "Username: rdpuser"
+          echo "Password: $(echo $RDP_CREDS | cut -d'|' -f2 | cut -d':' -f2-)"
+          echo "==================\n"
           
-          # Display the tool banner
-          Write-Host "`n"
-          Write-Host "╦╔═╗╔═╗╔╦╗╔═╗╦  ╦  ╔═╗╔═╗╔═╗"
-          Write-Host "╠╩╗║║ ║║║║╠═╣║  ║  ║ ║╚═╗║╣ "
-          Write-Host "╩ ╩╚═╝╩ ╩╩ ╩╩═╝╩═╝╚═╝╚═╝╚═╝"
-          Write-Host "`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] DDoS Tool SSH Server Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
-          }
+          # Keep runner active
+          while true; do
+              echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              sleep 300
+          done
