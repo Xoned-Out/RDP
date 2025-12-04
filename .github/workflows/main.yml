@@ -5,107 +5,103 @@ on:
 
 jobs:
   secure-rdp:
-    runs-on: kali-latest
+    runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Install and Configure xRDP
+      - name: Configure Core RDP Settings
         run: |
-          # Update system and install xRDP
-          sudo apt update
-          sudo apt install -y xrdp xfce4 xfce4-goodies
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
-          # Configure xRDP to use XFCE
-          echo "xfce4-session" > ~/.xsession
-          sudo cp ~/.xsession /etc/skel/
-          
-          # Configure xRDP to use X11
-          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/port=3389/port=3389/g' /etc/xrdp/xrdp.ini
-          
-          # Enable and start xRDP service
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
-      - name: Configure Firewall for RDP
-        run: |
-          # Allow RDP port through firewall
-          sudo ufw allow 3389/tcp
-          sudo ufw --force enable
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force
       - name: Create RDP User with Secure Password
         run: |
-          # Generate secure password
-          PASSWORD=$(openssl rand -base64 32 | tr -d '/+' | cut -c1-16)
-          PASSWORD="${PASSWORD}$(openssl rand -base64 32 | tr -dc '!@#$%^&*' | cut -c1-4)"
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          # Create user and set password
-          sudo useradd -m -s /bin/bash rdpuser
-          echo "rdpuser:${PASSWORD}" | sudo chpasswd
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
           
-          # Add user to sudo and other necessary groups
-          sudo usermod -aG sudo rdpuser
-          sudo usermod -aG audio rdpuser
-          sudo usermod -aG video rdpuser
-          
-          echo "RDP_CREDS=User: rdpuser | Password: $PASSWORD" >> $GITHUB_ENV
-          
-          # Verify user creation
-          if ! id "rdpuser" &>/dev/null; then
-              echo "User creation failed"
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
               exit 1
-          fi
+          }
       - name: Install Tailscale
         run: |
-          # Add Tailscale repository and install
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
           
-          sudo apt update
-          sudo apt install -y tailscale
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
       - name: Establish Tailscale Connection
         run: |
-          # Start Tailscale and connect
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-kali-runner-$GITHUB_RUN_ID
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           
-          # Wait for Tailscale IP assignment
-          TS_IP=""
-          for i in {1..10}; do
-              TS_IP=$(tailscale ip -4)
-              if [ -n "$TS_IP" ]; then
-                  break
-              fi
-              sleep 5
-          done
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
           
-          if [ -z "$TS_IP" ]; then
-              echo "Tailscale IP not assigned. Exiting."
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
-          fi
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
       - name: Verify RDP Accessibility
         run: |
-          echo "Tailscale IP: $TAILSCALE_IP"
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           
-          # Test RDP port connectivity
-          if ! nc -z -w 5 $TAILSCALE_IP 3389; then
-              echo "TCP connection to RDP port 3389 failed"
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
               exit 1
-          fi
-          echo "TCP connectivity successful!"
-      - name: Install Additional Desktop Utilities
-        run: |
-          # Install useful desktop applications
-          sudo apt install -y firefox-esr file-manager-packages \
-                           gnome-terminal net-tools
+          }
+          Write-Host "TCP connectivity successful!"
       - name: Maintain Connection
         run: |
-          echo -e "\n=== RDP ACCESS ==="
-          echo "Address: $TAILSCALE_IP"
-          echo "Username: rdpuser"
-          echo "Password: $(echo $RDP_CREDS | cut -d'|' -f2 | cut -d':' -f2-)"
-          echo "==================\n"
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
           
-          # Keep runner active
-          while true; do
-              echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              sleep 300
-          done
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
