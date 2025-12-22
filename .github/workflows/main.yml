@@ -42,9 +42,30 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          # Generate cryptographically secure password
-          Add-Type -AssemblyName System.Web
-          $password = [System.Web.Security.Membership]::GeneratePassword(20, 6)
+          # Simple but secure password generator
+          $charSets = @{
+            Lower = 'abcdefghijklmnopqrstuvwxyz'
+            Upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+            Number = '0123456789'
+            Special = '!@#$%^&*()_+-=[]{}|;:,.<>?'
+          }
+          
+          # Ensure at least one of each type
+          $password = @(
+            $charSets.Upper[(Get-Random -Maximum $charSets.Upper.Length)]
+            $charSets.Lower[(Get-Random -Maximum $charSets.Lower.Length)]
+            $charSets.Number[(Get-Random -Maximum $charSets.Number.Length)]
+            $charSets.Special[(Get-Random -Maximum $charSets.Special.Length)]
+          )
+          
+          # Add random characters to reach 16 characters
+          $allChars = $charSets.Lower + $charSets.Upper + $charSets.Number + $charSets.Special
+          for ($i = 0; $i -lt 12; $i++) {
+              $password += $allChars[(Get-Random -Maximum $allChars.Length)]
+          }
+          
+          # Shuffle and join
+          $password = -join ($password | Get-Random -Count $password.Length)
           
           # Create user
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
@@ -187,7 +208,7 @@ jobs:
             '720' = 720
           }
           
-          $selectedHours = "${{ github.event.inputs.runtime_hours }}"
+          $selectedHours = "${{ github.event.inputs.runtime_hours || '168' }}"
           $runtimeHours = $runtimeMap[$selectedHours]
           $maxRuntime = [TimeSpan]::FromHours($runtimeHours)
           
