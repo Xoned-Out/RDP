@@ -11,7 +11,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: ${{ fromJSON(github.event.inputs.runtime_hours) * 60 || 10080 }}
+    timeout-minutes: ${{ fromJSON(github.event.inputs.runtime_hours || '168') * 60 }}
 
     steps:
       - name: Configure Core RDP Settings
@@ -165,12 +165,13 @@ jobs:
       - name: Maintain Persistent Connection
         run: |
           Write-Host "`n=== RDP WORKSTATION ACTIVE ==="
-          Write-Host "This runner will stay online for ${{ github.event.inputs.runtime_hours || '168' }} hours"
           Write-Host "To connect, use the credentials above with any RDP client"
           Write-Host "Cancel this workflow in GitHub Actions to terminate`n"
           
           $startTime = Get-Date
-          $maxRuntime = [TimeSpan]::FromHours(${{ fromJSON(github.event.inputs.runtime_hours) || 168 }})
+          # Calculate max runtime from input or default to 168 hours
+          $runtimeInput = "${{ github.event.inputs.runtime_hours || '168' }}"
+          $maxRuntime = [TimeSpan]::FromHours([double]$runtimeInput)
           
           # Health check and keep-alive loop
           while ($true) {
@@ -204,9 +205,11 @@ jobs:
               }
               
               # Status report every 5 minutes
-              if ((Get-Date).Minute % 5 -eq 0) {
+              $currentMinute = (Get-Date).Minute
+              if ($currentMinute % 5 -eq 0) {
                   $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
                   Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Status: $($allHealthy ? 'HEALTHY' : 'RECOVERING') | IP: $tsIP | Uptime: $($elapsed.ToString('hh\:mm\:ss'))"
+                  Start-Sleep -Seconds 60  # Skip a minute to avoid spamming
               }
               
               Start-Sleep -Seconds 30
