@@ -8,10 +8,14 @@ on:
         default: '168'
         type: number
 
+env:
+  # Calculate timeout in minutes (hours * 60) with fallback to 10080 (7 days)
+  TIMEOUT_MINUTES: ${{ fromJSON(github.event.inputs.runtime_hours || '168') * 60 }}
+
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: ${{ fromJSON(github.event.inputs.runtime_hours || '168') * 60 }}
+    timeout-minutes: ${{ env.TIMEOUT_MINUTES }}
 
     steps:
       - name: Configure Core RDP Settings
@@ -165,15 +169,18 @@ jobs:
       - name: Maintain Persistent Connection
         run: |
           Write-Host "`n=== RDP WORKSTATION ACTIVE ==="
+          Write-Host "Runtime: ${{ github.event.inputs.runtime_hours || '168' }} hours"
           Write-Host "To connect, use the credentials above with any RDP client"
           Write-Host "Cancel this workflow in GitHub Actions to terminate`n"
           
           $startTime = Get-Date
-          # Calculate max runtime from input or default to 168 hours
-          $runtimeInput = "${{ github.event.inputs.runtime_hours || '168' }}"
-          $maxRuntime = [TimeSpan]::FromHours([double]$runtimeInput)
+          # Get runtime from environment or default to 168
+          $runtimeHours = [double]::Parse("${{ github.event.inputs.runtime_hours || '168' }}")
+          $maxRuntime = [TimeSpan]::FromHours($runtimeHours)
           
           # Health check and keep-alive loop
+          $lastStatusMinute = -1
+          
           while ($true) {
               $currentTime = Get-Date
               $elapsed = $currentTime - $startTime
@@ -205,11 +212,12 @@ jobs:
               }
               
               # Status report every 5 minutes
-              $currentMinute = (Get-Date).Minute
-              if ($currentMinute % 5 -eq 0) {
+              $currentMinute = $currentTime.Minute
+              if ($currentMinute % 5 -eq 0 -and $currentMinute -ne $lastStatusMinute) {
+                  $lastStatusMinute = $currentMinute
                   $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
-                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Status: $($allHealthy ? 'HEALTHY' : 'RECOVERING') | IP: $tsIP | Uptime: $($elapsed.ToString('hh\:mm\:ss'))"
-                  Start-Sleep -Seconds 60  # Skip a minute to avoid spamming
+                  $remaining = $maxRuntime - $elapsed
+                  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Status: $($allHealthy ? 'HEALTHY' : 'RECOVERING') | IP: $tsIP | Uptime: $($elapsed.ToString('hh\:mm\:ss')) | Remaining: $($remaining.ToString('hh\:mm\:ss'))"
               }
               
               Start-Sleep -Seconds 30
